@@ -1,0 +1,11 @@
+/node_modules/
+/.npm-cache/
+/dist/
+/target/
+/src/target/
+/src/gen/
+/.impeccable/
+/.agents/
+/.codex/
+/last-cps-test.json
+/chrome_*.png

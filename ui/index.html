@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#202020" />
+    <title>vibeclicker</title>
+  </head>
+  <body class="min-h-screen w-full">
+    <div class="app-frame flex min-h-screen flex-col">
+      <header class="topbar flex items-center justify-between">
+        <nav class="tab-switch" aria-label="Views">
+          <button class="tab-button is-selected" type="button" data-view="main" aria-current="page" tabindex="0">Main</button>
+          <button class="tab-button" type="button" data-view="settings" tabindex="-1">Settings</button>
+        </nav>
+        <div class="switch status-pill" id="status-pill" data-state="idle" role="status" aria-label="Idle" title="Idle" aria-live="polite">
+          <span aria-hidden="true"></span>
+        </div>
+      </header>
+
+      <main class="view-stack flex-1">
+        <section class="view-panel main-view" data-panel="main" aria-label="Main">
+          <div class="main-grid grid">
+            <section class="surface-card interval-card" aria-labelledby="interval-title">
+              <div class="card-heading flex items-center justify-between">
+                <h1 id="interval-title">Click Interval</h1>
+              </div>
+              <div class="option-segment rate-entry-switch" role="group" aria-label="Rate entry mode">
+                <button type="button" data-rate-entry="cps" aria-pressed="true" tabindex="0">Clicks per second</button>
+                <button type="button" data-rate-entry="interval" aria-pressed="false" tabindex="-1">Timed interval</button>
+              </div>
+              <label class="rate-control" for="cps-input" data-rate-panel="cps">
+                <span class="field-label">Clicks per second</span>
+                <span class="rate-input-wrap">
+                  <input id="cps-input" class="rate-input tabular-nums" type="number" min="1" max="2000" step="1" value="100" inputmode="decimal" />
+                  <span class="rate-unit">CPS</span>
+                </span>
+              </label>
+              <div data-rate-panel="interval" hidden>
+                <span class="field-label">Click interval</span>
+                <div class="time-grid grid" aria-label="Click interval parts">
+                  <label class="time-field"><span>Hours</span><input id="hours-input" type="number" min="0" max="24" step="1" value="0" inputmode="numeric" /></label>
+                  <label class="time-field"><span>Minutes</span><input id="minutes-input" type="number" min="0" max="59" step="1" value="0" inputmode="numeric" /></label>
+                  <label class="time-field"><span>Seconds</span><input id="seconds-input" type="number" min="0" max="59" step="1" value="0" inputmode="numeric" /></label>
+                  <label class="time-field"><span>Milliseconds</span><input id="milliseconds-input" type="number" min="0" max="999.999" step="1" value="10" inputmode="decimal" /></label>
+                </div>
+              </div>
+            </section>
+
+            <section class="surface-card config-card" aria-labelledby="config-title">
+              <div class="card-heading"><h2 id="config-title">Click Configuration</h2></div>
+              <div class="tab-switch input-mode-switch" role="tablist" aria-label="Input type">
+                <button class="tab-button is-selected" id="mouse-mode-tab" type="button" role="tab" data-input-mode="mouse" aria-selected="true">Mouse</button>
+                <button class="tab-button" id="keyboard-mode-tab" type="button" role="tab" data-input-mode="keyboard" aria-selected="false">Keyboard</button>
+              </div>
+              <div class="input-panel" data-input-panel="mouse" role="tabpanel" aria-labelledby="mouse-mode-tab">
+                <div class="mouse-input-content">
+                  <fieldset class="segmented-field">
+                    <legend>Mouse button</legend>
+                    <div class="option-segment" data-setting="mouseButton" role="group" aria-label="Mouse button">
+                      <button type="button" data-value="left" aria-pressed="true" tabindex="0">Left</button>
+                      <button type="button" data-value="right" aria-pressed="false" tabindex="-1">Right</button>
+                      <button type="button" data-value="middle" aria-pressed="false" tabindex="-1">Middle</button>
+                    </div>
+                  </fieldset>
+                  <fieldset class="segmented-field">
+                    <legend>Click type</legend>
+                    <div class="option-segment" data-setting="clickType" role="group" aria-label="Click type">
+                      <button type="button" data-value="single" aria-pressed="true" tabindex="0">Single</button>
+                      <button type="button" data-value="double" aria-pressed="false" tabindex="-1" title="Sends two rapid clicks per cycle. CPS counts both clicks.">Double</button>
+                    </div>
+                  </fieldset>
+                </div>
+              </div>
+              <div class="input-panel keyboard-panel" data-input-panel="keyboard" role="tabpanel" aria-labelledby="keyboard-mode-tab" hidden>
+                <div class="keyboard-setting-row">
+                  <span class="field-label">Key to repeat</span>
+                  <div class="hotkey-actions flex items-center"><kbd id="output-key-badge" class="key-badge">Space</kbd><button id="change-output-key" class="secondary-button" type="button"><i data-lucide="keyboard" aria-hidden="true"></i><span>Change</span></button></div>
+                </div>
+              </div>
+            </section>
+
+            <section class="surface-card hotkey-card" aria-labelledby="hotkey-title">
+              <div class="hotkey-copy">
+                <div class="card-heading"><h2 id="hotkey-title">Toggle Hotkey</h2></div>
+              </div>
+              <div class="hotkey-actions flex items-center">
+                <kbd id="hotkey-badge" class="key-badge">F6</kbd>
+                <button id="change-hotkey" class="secondary-button" type="button">
+                  <i data-lucide="keyboard" aria-hidden="true"></i><span>Change</span>
+                </button>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view-panel settings-view" data-panel="settings" aria-label="Settings" hidden>
+          <div class="settings-stack">
+            <section class="surface-card preferences-card" aria-labelledby="preferences-title">
+              <div class="card-heading"><h1 id="preferences-title">UI Preferences</h1></div>
+              <div class="preference-row">
+                <div class="preference-copy"><h2>Appearance</h2></div>
+                <div class="option-segment compact" data-setting="theme" role="group" aria-label="Appearance">
+                  <button type="button" data-value="system" aria-pressed="true" tabindex="0">System</button>
+                  <button type="button" data-value="light" aria-pressed="false" tabindex="-1">Light</button>
+                  <button type="button" data-value="dark" aria-pressed="false" tabindex="-1">Dark</button>
+                </div>
+              </div>
+              <div class="preference-row">
+                <div class="preference-copy"><h2>Keep window on top</h2></div>
+                <button id="always-on-top" class="switch" type="button" role="switch" aria-checked="false" aria-label="Keep window on top"><span></span></button>
+              </div>
+              <div class="preference-row">
+                <div class="preference-copy"><h2>Transparency effects</h2></div>
+                <button id="transparency-effects" class="switch" type="button" role="switch" aria-checked="false" aria-label="Transparency effects"><span></span></button>
+              </div>
+              <div class="preference-row">
+                <div class="preference-copy"><h2>Tray behavior</h2></div>
+                <div class="option-segment compact" data-setting="trayBehavior" role="group" aria-label="Tray behavior">
+                  <button type="button" data-value="never" aria-pressed="true" tabindex="0">Never</button>
+                  <button type="button" data-value="minimize" aria-pressed="false" tabindex="-1">Minimize</button>
+                  <button type="button" data-value="close" aria-pressed="false" tabindex="-1">Close</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="surface-card about-card" aria-labelledby="about-title">
+              <div class="about-copy"><div class="card-heading"><h2 id="about-title">About</h2></div><p>vibeclicker</p><span class="version-label">Version 0.1.0</span></div>
+              <button id="github-link" class="secondary-button github-button" type="button">
+                <i data-lucide="github" aria-hidden="true"></i><span>GitHub profile</span><i data-lucide="arrow-up-right" aria-hidden="true" class="external-icon"></i>
+              </button>
+            </section>
+          </div>
+        </section>
+      </main>
+
+      <footer class="action-footer">
+        <button id="start-stop" class="primary-action" type="button">
+          <i data-lucide="play" aria-hidden="true"></i><span>Start clicking</span>
+        </button>
+      </footer>
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
