@@ -53,3 +53,7 @@ Undecided. No unique mechanism or competitive differentiator has been confirmed;
 - Keep operation predictable and safe while users work in other applications.
 - Persist user preferences locally and require no Rust toolchain from end users.
 
+## Future Roadmap
+
+- Add in-app updates with the Tauri updater plugin, signed update artifacts, and GitHub Releases or a hosted update manifest. Users should be able to check for updates, download one, and install it from within the app.
+

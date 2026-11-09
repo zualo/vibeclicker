@@ -2,6 +2,8 @@
 
 A compact Windows autoclicker built with a Rust click engine and a Tauri v2 frontend. The interface uses Tailwind CSS, Lucide icons, and a locally bundled Geist variable font. It follows the system light/dark preference by default and lets users choose an override.
 
+![VibeClicker main screen](screenshots/vibeclicker-preview.png)
+
 ## Develop
 
 For development, install Node.js and Rust, then run:

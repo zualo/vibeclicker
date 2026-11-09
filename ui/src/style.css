@@ -65,8 +65,10 @@ body { min-height: 100vh; background: var(--canvas); color: var(--text); font-si
 :root[data-transparency-effects="true"] .key-badge,
 :root[data-transparency-effects="true"] .secondary-button,
 :root[data-transparency-effects="true"] .switch { background-color: color-mix(in srgb, var(--surface-raised) 90%, transparent); }
-:root[data-transparency-effects="true"] .switch[aria-checked="true"] { border-color: var(--text); background-color: var(--text); }
-:root[data-transparency-effects="true"] .switch[aria-checked="true"] span { background-color: var(--accent-text); }
+:root[data-transparency-effects="true"] .switch[aria-checked="true"],
+:root[data-transparency-effects="true"] .status-pill[data-state="active"] { border-color: var(--text); background-color: var(--text); }
+:root[data-transparency-effects="true"] .switch[aria-checked="true"] span,
+:root[data-transparency-effects="true"] .status-pill[data-state="active"] span { background-color: var(--accent-text); }
 :root[data-transparency-effects="true"] .option-segment button[aria-pressed="true"] { background-color: var(--surface-selected); color: var(--text); }
 button, input { font: inherit; }
 input { -webkit-user-select: text; user-select: text; }
