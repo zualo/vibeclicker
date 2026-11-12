@@ -32,7 +32,13 @@ pub struct AppConfig {
     pub input_mode: InputMode,
     pub keyboard_key: u32,
     pub mouse_button: MouseButton,
+    #[serde(default)]
+    pub mouse_buttons: Vec<MouseButton>,
     pub click_type: ClickType,
+    #[serde(default)]
+    pub human_like_behavior: bool,
+    #[serde(default = "default_continuous_enabled")]
+    pub continuous_enabled: bool,
     pub theme: ThemePreference,
     pub transparency_effects: bool,
     pub always_on_top: bool,
@@ -44,6 +50,7 @@ pub struct AppConfig {
 }
 
 fn missing_interval() -> Option<f64> { None }
+fn default_continuous_enabled() -> bool { true }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -76,6 +83,7 @@ pub enum ClickType {
     #[default]
     Single,
     Double,
+    Continuous,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -107,7 +115,10 @@ impl Default for AppConfig {
             input_mode: InputMode::Mouse,
             keyboard_key: 0x20,
             mouse_button: MouseButton::Left,
+            mouse_buttons: vec![MouseButton::Left],
             click_type: ClickType::Single,
+            human_like_behavior: false,
+            continuous_enabled: true,
             theme: ThemePreference::System,
             transparency_effects: false,
             always_on_top: false,
@@ -146,7 +157,9 @@ pub fn load_config() -> AppConfig {
         interval_ms.clamp(0.5, 86_400_000.0)
     } else { 10.0 };
     config.interval_ms = Some(interval_ms);
-    if config.keyboard_key == config.hotkey.key_code {
+    if config.mouse_buttons.is_empty() { config.mouse_buttons = vec![config.mouse_button]; }
+    config.mouse_button = config.mouse_buttons[0];
+    if config.input_mode == InputMode::Keyboard && config.keyboard_key == config.hotkey.key_code {
         config.keyboard_key = if config.hotkey.key_code == 0x20 {
             0x41
         } else {

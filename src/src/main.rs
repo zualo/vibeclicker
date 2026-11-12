@@ -5,12 +5,12 @@ mod settings;
 
 use engine::{measured_cps, ClickEngine, ClickOptions, EngineEvent};
 use serde::Serialize;
-use settings::{load_config, save_config, AppConfig, Hotkey, TrayBehavior};
+use settings::{load_config, save_config, AppConfig, ClickType, Hotkey, InputMode, TrayBehavior};
 use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent,
+    AppHandle, Emitter, LogicalSize, Manager, State, WebviewWindow, WindowEvent,
 };
 
 struct AppState {
@@ -37,18 +37,23 @@ fn click_options(config: &AppConfig) -> ClickOptions {
     ClickOptions {
         mode: config.input_mode,
         mouse_button: config.mouse_button,
+        mouse_buttons: config.mouse_buttons.clone(),
         click_type: config.click_type,
         keyboard_key: config.keyboard_key,
     }
 }
 
 fn reject_hotkey_collision(config: &AppConfig, hotkey: Hotkey) -> Result<(), String> {
-    reject_key_collision(config.keyboard_key, hotkey.key_code)
+    if config.input_mode == InputMode::Keyboard {
+        reject_key_collision(config.keyboard_key, hotkey.key_code)
+    } else {
+        Ok(())
+    }
 }
 
 fn reject_key_collision(output_key: u32, toggle_key: u32) -> Result<(), String> {
     if output_key == toggle_key {
-        Err("The keyboard input key cannot also be the toggle hotkey. Choose a different key for one of them.".into())
+        Err("The repeated key and toggle hotkey must be different. Choose another key.".into())
     } else {
         Ok(())
     }
@@ -118,6 +123,46 @@ fn set_clicking_allowed(allowed: bool, state: State<'_, AppState>) -> Result<Cli
 }
 
 #[tauri::command]
+fn set_window_content_height(height: f64, window: WebviewWindow) -> Result<(), String> {
+    const MIN_HEIGHT: f64 = 558.0;
+    const MAX_HEIGHT: f64 = 1600.0;
+    let height = if height.is_finite() {
+        height.clamp(MIN_HEIGHT, MAX_HEIGHT)
+    } else {
+        return Err("Window height is invalid".into());
+    };
+    window
+        .set_max_size(Some(LogicalSize::new(700.0, height)))
+        .map_err(|error| error.to_string())?;
+    let scale_factor = window.scale_factor().map_err(|error| error.to_string())?;
+    let current = window
+        .inner_size()
+        .map_err(|error| error.to_string())?
+        .to_logical::<f64>(scale_factor);
+    if (current.height - height).abs() > 0.5 {
+        window
+            .set_size(LogicalSize::new(current.width, height))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_continuous_enabled(enabled: bool, state: State<'_, AppState>) -> Result<ClickerState, String> {
+    let mut config = state.config.lock().map_err(|_| "Settings are unavailable")?;
+    let engine = state.engine.lock().map_err(|_| "Click engine is unavailable")?;
+    let previous = config.continuous_enabled;
+    engine.set_continuous_enabled(enabled);
+    config.continuous_enabled = enabled;
+    if let Err(error) = save_config(&config) {
+        config.continuous_enabled = previous;
+        engine.set_continuous_enabled(previous);
+        return Err(error);
+    }
+    Ok(ClickerState { active: engine.is_running(), clicks: engine.click_count() })
+}
+
+#[tauri::command]
 fn register_hotkey(hotkey: Hotkey, state: State<'_, AppState>) -> Result<(), String> {
     let mut config = state
         .config
@@ -145,17 +190,19 @@ fn set_keyboard_key(key_code: u32, state: State<'_, AppState>) -> Result<(), Str
         .config
         .lock()
         .map_err(|_| "Settings are unavailable")?;
-    reject_key_collision(key_code, config.hotkey.key_code)?;
+    if config.input_mode == InputMode::Keyboard {
+        reject_key_collision(key_code, config.hotkey.key_code)?;
+    }
     let previous = config.keyboard_key;
     config.keyboard_key = key_code;
     let engine = state
         .engine
         .lock()
         .map_err(|_| "Click engine is unavailable")?;
-    engine.set_click_options(click_options(&config));
+    engine.set_click_options(click_options(&config))?;
     if let Err(error) = save_config(&config) {
         config.keyboard_key = previous;
-        engine.set_click_options(click_options(&config));
+        let _ = engine.set_click_options(click_options(&config));
         return Err(error);
     }
     Ok(())
@@ -175,6 +222,9 @@ fn save_settings(
         return Err("Interval must be between 0.5 milliseconds and 24 hours".into());
     }
     config.interval_ms = Some(interval_ms);
+    if config.mouse_buttons.is_empty() { config.mouse_buttons = vec![config.mouse_button]; }
+    if config.click_type != ClickType::Continuous { config.mouse_buttons.truncate(1); }
+    config.mouse_button = config.mouse_buttons[0];
     reject_hotkey_collision(&config, config.hotkey)?;
 
     let mut current = state
@@ -185,13 +235,18 @@ fn save_settings(
         .engine
         .lock()
         .map_err(|_| "Click engine is unavailable")?;
+    if config.click_type == settings::ClickType::Continuous && !engine.continuous_supported() {
+        return Err("Continuous mode is unavailable because Windows could not monitor held inputs".into());
+    }
     if config.hotkey != current.hotkey {
         engine.set_hotkey(config.hotkey)?;
     }
     engine.set_interval_ms(interval_ms)?;
     engine.set_cps(config.cps)?;
     engine.set_rate_entry_mode(config.rate_entry_mode);
-    engine.set_click_options(click_options(&config));
+    engine.set_human_like(config.human_like_behavior && config.rate_entry_mode == settings::RateEntryMode::Cps);
+    engine.set_continuous_enabled(config.continuous_enabled);
+    engine.set_click_options(click_options(&config))?;
     window
         .set_always_on_top(config.always_on_top)
         .map_err(|e| e.to_string())?;
@@ -204,7 +259,7 @@ fn save_settings(
         let _ = engine.set_interval_ms(current.interval_ms.unwrap_or(1000.0 / current.cps));
         let _ = engine.set_cps(current.cps);
         engine.set_rate_entry_mode(current.rate_entry_mode);
-        engine.set_click_options(click_options(&current));
+        let _ = engine.set_click_options(click_options(&current));
         let _ = window.set_always_on_top(current.always_on_top);
         let _ = set_tray_visibility(&app, previous_tray_visible);
         if config.hotkey != current.hotkey {
@@ -307,15 +362,23 @@ fn set_transparency_effects(
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| show_main_window(app)))
         .setup(|app| {
             let config = load_config();
             let mut config = config;
             let engine = ClickEngine::new(config.cps, config.hotkey)
                 .map_err(|error| std::io::Error::other(error))?;
+            if config.click_type == settings::ClickType::Continuous && !engine.continuous_supported() {
+                config.click_type = settings::ClickType::Single;
+                let _ = save_config(&config);
+            }
             engine.set_interval_ms(config.interval_ms.unwrap_or(1000.0 / config.cps)).map_err(std::io::Error::other)?;
             engine.set_rate_entry_mode(config.rate_entry_mode);
-            engine.set_click_options(click_options(&config));
+            engine.set_human_like(config.human_like_behavior && config.rate_entry_mode == settings::RateEntryMode::Cps);
+            engine.set_continuous_enabled(config.continuous_enabled);
+            engine.set_click_options(click_options(&config)).map_err(std::io::Error::other)?;
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_always_on_top(config.always_on_top);
                 if config.transparency_effects && set_native_acrylic(&window, true, config.theme).is_err() {
@@ -412,6 +475,15 @@ fn main() {
                                 .unwrap_or_default();
                             let _ = handle.emit("clicker://state", ClickerState { active, clicks });
                         }
+                        EngineEvent::ContinuousEnabled(enabled) => {
+                            if let Ok(mut config) = handle.state::<AppState>().config.lock() {
+                                config.continuous_enabled = enabled;
+                                if let Err(error) = save_config(&config) {
+                                    let _ = handle.emit("clicker://error", format!("Continuous toggle changed but could not be saved: {error}"));
+                                }
+                            }
+                            let _ = handle.emit("clicker://continuous-enabled", enabled);
+                        }
                         EngineEvent::HotkeyError(message) => {
                             let _ = handle.emit("clicker://error", message);
                         }
@@ -435,6 +507,8 @@ fn main() {
             start_clicking,
             stop_clicking,
             set_clicking_allowed,
+            set_window_content_height,
+            set_continuous_enabled,
             register_hotkey,
             save_settings,
             set_always_on_top,

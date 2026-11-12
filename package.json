@@ -1,7 +1,7 @@
 {
   "name": "vibeclicker-ui",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite --configLoader native",
@@ -12,6 +12,8 @@
     "@fontsource-variable/geist": "^5.3.0",
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-opener": "^2.5.2",
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.14.1",
     "lucide": "^0.468.0"
   },
   "devDependencies": {

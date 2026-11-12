@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "vibeclicker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "dev.vibeclicker.desktop",
   "build": {
     "beforeDevCommand": "npm.cmd run dev -- --host 127.0.0.1",
@@ -19,7 +19,7 @@
         "minWidth": 420,
         "minHeight": 558,
         "maxWidth": 700,
-        "maxHeight": 558,
+        "maxHeight": 1600,
         "resizable": true,
         "maximizable": false,
         "fullscreen": false,
@@ -34,7 +34,19 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["msi", "nsis"],
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "icon": ["icons/icon.ico", "icons/icon.png", "icons/icon.icns"]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU2RTZFQjExOUE4QTQ5NTIKUldSU1NZcWFFZXZtVnFHdTY1LzBGWEdjWmtKemc0T2JxbnVqeUoybGJBNE51U2FhbjlqZlMwakcK",
+      "endpoints": [
+        "https://github.com/zualo/vibeclicker/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
