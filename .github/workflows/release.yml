@@ -39,6 +39,7 @@ jobs:
           args: --bundles nsis --config src/tauri.conf.json
           tagName: app-v__VERSION__
           releaseName: vibeclicker v__VERSION__
+          releaseAssetNamePattern: '[name][setup][ext]'
           releaseBody: Download the NSIS installer below. Users still on 0.1.0 must manually install 0.2.0 once before in-app updates work.
           releaseDraft: false
           prerelease: false

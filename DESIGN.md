@@ -35,7 +35,7 @@ vibeclicker is a compact desktop autoclicker with a Rust input engine and a Taur
 - Opening Settings stops clicking and temporarily disables the toggle hotkey; returning to Main allows it again. In Continuous mode, a held trigger must be released before clicking can resume after Settings closes. While a keybind is being captured, a blurred overlay blocks pointer interaction with the app until a key is selected or Escape cancels; keyboard capture stays active.
 - The output key and toggle hotkey must differ in every keyboard mode because the global hotkey gates Continuous mode as well.
 - Settings persist locally. System theme tracks Windows unless the user selects a saved override.
-- Updates use the signed NSIS installer path. Settings offers a concise Check for updates action with inline checking, download progress, install, and error states. A background update check runs on installed app startup without interrupting use or installing automatically. Update availability and check errors use the shared centered toast. GitHub Releases publish the updater signature inside `latest.json` without a separate `.sig` asset.
+- Updates use the signed NSIS installer path. Settings offers a concise Check for updates action with inline checking, download progress, install, and error states. A background update check runs on installed app startup without interrupting use or installing automatically. Update availability and check errors use the shared centered toast. GitHub release assets use the `vibeclicker-setup.exe` installer name without version or architecture suffixes; the release tag carries the version. The updater signature is published inline in `latest.json` without a separate `.sig` asset.
 
 ## Platform and verification
 
