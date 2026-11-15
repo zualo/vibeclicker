@@ -136,7 +136,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--text); outl
 .key-badge { display: inline-flex; min-height: 34px; min-width: 48px; align-items: center; justify-content: center; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); color: var(--text); font-size: 12px; font-weight: 600; white-space: nowrap; }
 .secondary-button { display: inline-flex; min-height: 34px; align-items: center; justify-content: center; gap: 7px; padding: 0 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); color: var(--text); cursor: pointer; font-size: 12px; font-weight: 550; transition: background 150ms ease, border-color 150ms ease; }
 .secondary-button:hover { border-color: var(--quiet); background: var(--surface-selected); }
-.secondary-button:disabled { cursor: wait; opacity: .55; }
+.secondary-button:disabled { cursor: default; opacity: .55; }
 .secondary-button svg { width: 14px; height: 14px; }
 .settings-stack { display: grid; min-width: 0; gap: 12px; }
 .preferences-card .card-heading { margin-bottom: 4px; }
@@ -172,12 +172,12 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--text); outl
 .primary-action:disabled { cursor: wait; opacity: .65; }
 .primary-action.is-fading-out { opacity: 0; transform: translateY(-4px); pointer-events: none; }
 .primary-action svg { width: 16px; height: 16px; }
-.toast { position: fixed; z-index: 20; top: 14px; left: 50%; max-width: min(430px, calc(100vw - 32px)); padding: 11px 14px; transform: translate(-50%, -12px); border: 1px solid var(--border); border-radius: 9px; background: var(--surface-raised); color: var(--text); box-shadow: 0 8px 24px rgb(0 0 0 / .24); opacity: 0; pointer-events: none; font-size: 12px; line-height: 1.45; transition: transform 220ms cubic-bezier(.2, .8, .2, 1), opacity 180ms ease; }
-.toast.is-visible { transform: translate(-50%, 0); opacity: 1; }
+.toast { position: fixed; z-index: 20; top: 50%; left: 50%; max-width: min(430px, calc(100vw - 32px)); padding: 11px 14px; transform: translate(-50%, calc(-50% - 12px)); border: 1px solid var(--border); border-radius: 9px; background: var(--surface-raised); color: var(--text); box-shadow: 0 8px 24px rgb(0 0 0 / .24); opacity: 0; pointer-events: none; font-size: 12px; line-height: 1.45; transition: transform 220ms cubic-bezier(.2, .8, .2, 1), opacity 180ms ease; }
+.toast.is-visible { transform: translate(-50%, -50%); opacity: 1; }
 .toast.is-capture-prompt { top: 50%; transform: translate(-50%, calc(-50% - 12px)); box-shadow: none; }
 .toast.is-capture-prompt.is-visible { transform: translate(-50%, -50%); }
 .app-frame::before { position: fixed; z-index: 10; inset: 0; background: color-mix(in srgb, var(--canvas) 38%, transparent); content: ""; opacity: 0; pointer-events: none; -webkit-backdrop-filter: blur(4px) saturate(.88); backdrop-filter: blur(4px) saturate(.88); transition: opacity 180ms ease, visibility 180ms ease; visibility: hidden; }
-.app-frame.is-capturing::before { opacity: 1; visibility: visible; }
+.app-frame.is-capturing::before { opacity: 1; pointer-events: auto; visibility: visible; }
 .app-frame.is-capturing > #toast { z-index: 30; }
 .toast[hidden] { display: none; }
 .toast[data-error="true"] { border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); color: var(--danger); }

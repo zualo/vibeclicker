@@ -46,6 +46,7 @@ let lastRenderedContinuous = null;
 let captureTarget = null;
 let captureInProgress = false;
 let suppressMouseAuxClick = false;
+let updateCheckInProgress = false;
 let saveTimer;
 let toastTimer;
 let toastHideTimer;
@@ -613,6 +614,7 @@ async function captureInput(keyCode, modifiers = 0) {
   $("#change-output-key").disabled = false;
   updateHotkeyBadge();
   updateContinuousModeUI();
+  notify(target === "hotkey" ? "Toggle hotkey updated." : "Output key updated.");
 }
 
 window.addEventListener("keydown", async (event) => {
@@ -673,11 +675,14 @@ $("#check-for-updates").addEventListener("click", async (event) => {
     notify("Updates are available in the installed app.", true);
     return;
   }
+  if (updateCheckInProgress) return;
   button.disabled = true;
   const label = button.querySelector("span");
   try {
     label.textContent = "Checking...";
+    updateCheckInProgress = true;
     const update = await check();
+    updateCheckInProgress = false;
     if (!update) {
       notify("You are up to date.");
       return;
@@ -700,9 +705,11 @@ $("#check-for-updates").addEventListener("click", async (event) => {
     label.textContent = "Restarting...";
     await relaunch();
   } catch (error) {
+    updateCheckInProgress = false;
     label.textContent = "Check for updates";
     notify(`Update failed: ${error}`, true);
   } finally {
+    updateCheckInProgress = false;
     button.disabled = false;
     label.textContent = "Check for updates";
   }
@@ -772,3 +779,14 @@ refreshIcons();
 loadSettings();
 setView(new URLSearchParams(location.search).get("view") === "settings" ? "settings" : "main");
 syncWindowHeight();
+
+if (!import.meta.env.DEV && window.__TAURI_INTERNALS__) {
+  updateCheckInProgress = true;
+  check().then((update) => {
+    if (update) notify(`vibeclicker ${update.version} is available. Check for updates to install it.`);
+  }).catch((error) => {
+    notify(`Could not check for updates: ${error}`, true);
+  }).finally(() => {
+    updateCheckInProgress = false;
+  });
+}

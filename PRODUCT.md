@@ -29,14 +29,14 @@ Undecided. No unique mechanism or competitive differentiator has been confirmed;
 - The click engine is written in Rust and the desktop interface is built with Tauri v2, HTML, Tailwind CSS, Lucide icons, and the bundled Geist font.
 - Users do not need to install Rust to run the app.
 - Mouse output supports left, right, or middle buttons with single or double click modes. Continuous mouse mode can select multiple buttons, with each button receiving the configured CPS. Keyboard output repeats a configurable key.
-- Continuous mode starts repeating after any selected mouse button or configured keyboard key has been held for 80 ms. Releasing the held trigger stops clicking; a shorter press is passed through normally and does not start repetition. The top-bar toggle enables or disables continuous mode. Opening Settings stops clicking, and the held input must be released before continuous clicking can resume.
+- Continuous mouse mode maps each selected output button to its matching physical trigger: holding Left, Right, or Middle for 80 ms generates only that button, while holding multiple selected buttons generates each held button at the configured CPS. Continuous keyboard mode uses the configured key as both trigger and output. Releasing a held trigger stops its generated input; a shorter press is passed through normally and does not start repetition. The top-bar toggle enables or disables continuous mode. Opening Settings stops clicking, and the held input must be released before continuous clicking can resume.
 - Users can set clicks per second and edit the derived interval in hours, minutes, seconds, and milliseconds. CPS counts individual click or key actions; double-click mode spaces pairs so the selected CPS remains the individual-action rate.
-- In clicks per second mode, users can enable Human-like Behavior to vary the effective click rate within 10% above or below the selected CPS.
+- In clicks per second mode, users can enable Human behavior to vary the effective click rate within 10% above or below the selected CPS.
 - Toggle hotkeys support keyboard keys and Mouse 4/5. In keyboard Single and Double modes, the repeated key must differ from the toggle hotkey.
 - In Continuous mode the configured global hotkey and top-bar switch enable or disable the held-trigger gate. The repeated keyboard key must differ from the toggle hotkey in every keyboard mode.
 - Preferences persist locally, including system/light/dark appearance, always-on-top, and the selected tray behavior.
 - Settings stops clicking while it is open. The global toggle hotkey is disabled until Main is active again. Input injection pauses while vibeclicker is foreground.
-- Settings includes a Check for updates action. Updates are signed, published through GitHub Releases, downloaded through the NSIS updater path, and installed with progress feedback; the first updater-enabled release requires a manual install for existing 0.1.0 users.
+- Settings includes a Check for updates action, and the installed app checks for updates in the background at startup. Background checks use a centered toast to report an available update or a check failure and never install without the user's confirmation. During keybind capture, the blurred overlay blocks pointer interaction with the rest of the app until a key is selected or Escape cancels. Updates are signed, published through GitHub Releases, downloaded through the NSIS updater path, and installed with progress feedback; the first updater-enabled release requires a manual install for existing 0.1.0 users. Release manifests carry the signature inline, without standalone `.sig` assets.
 - The window defaults to 700×558 px, with a 420–700 px width range and 558 px minimum height. After width or layout changes, the frontend measures the content and updates the native maximum height, then resizes to the measured height to avoid a scrollbar.
 - The initial release target is Windows. Linux and macOS are possible future targets after global input and packaging are validated on each platform. New releases use NSIS as the canonical Windows installer and updater format.
 - Runtime memory targets and comparative performance are undecided and have not been validated; do not make performance claims.
@@ -57,6 +57,7 @@ Undecided. No unique mechanism or competitive differentiator has been confirmed;
 - Make input type, action rate, and toggle behavior configurable.
 - Keep operation predictable and safe while users work in other applications.
 - Persist user preferences locally and require no Rust toolchain from end users.
+- Keep interface behavior consistent as features grow: extend shared toast, button, color, keyboard, and feedback patterns instead of creating one-off conventions.
 
 ## Future Roadmap
 
