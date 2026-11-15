@@ -43,13 +43,11 @@ jobs:
           releaseBody: |
             ## What's Changed
 
-            * Release 0.3.1 by @zualo in https://github.com/zualo/vibeclicker/pull/3
+            - Automatic update checking on app startup
+            - Centered, blocking update prompt with install progress
+            - Fixed browser preview for update and hotkey interactions
 
-            - Compact settings and spacing
-            - Content-based portrait sizing
-            - Shorter landscape hotkey card
-
-            **Full Changelog**: https://github.com/zualo/vibeclicker/compare/app-v0.3.0...app-v0.3.1
+            **Full Changelog**: https://github.com/zualo/vibeclicker/compare/app-v0.3.1...app-v0.3.2
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: true

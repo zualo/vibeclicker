@@ -16,9 +16,14 @@ import { check } from "@tauri-apps/plugin-updater";
 
 const GITHUB_PROFILE_URL = "https://github.com/zualo";
 const previewQuery = import.meta.env.DEV ? new URLSearchParams(location.search) : new URLSearchParams();
+const previewUpdatePrompt = previewQuery.get("preview") === "update";
 const previewTheme = previewQuery.get("theme");
 const previewInputMode = previewQuery.get("input");
 const previewWidth = Number(previewQuery.get("width"));
+const isTauriRuntime = () => Boolean(window.__TAURI_INTERNALS__);
+const invokeTauri = (command, args) => isTauriRuntime()
+  ? invoke(command, args)
+  : Promise.resolve(command === "get_settings" ? {} : { active });
 if (previewWidth >= 360 && previewWidth <= 1000) {
   document.documentElement.style.width = `${previewWidth}px`;
   document.body.style.width = `${previewWidth}px`;
@@ -47,6 +52,7 @@ let captureTarget = null;
 let captureInProgress = false;
 let suppressMouseAuxClick = false;
 let updateCheckInProgress = false;
+let cancelUpdatePrompt = null;
 let saveTimer;
 let toastTimer;
 let toastHideTimer;
@@ -55,6 +61,10 @@ const $$ = (selector) => [...document.querySelectorAll(selector)];
 const statusPill = $("#status-pill");
 const actionButton = $("#start-stop");
 const toast = $("#toast");
+const toastMessage = $("#toast-message");
+const updatePrompt = $("#update-prompt");
+const updatePromptMessage = $("#update-prompt-message");
+const updatePromptActions = $(".update-prompt-actions");
 const appFrame = $(".app-frame");
 const fadingHiddenTargets = new WeakMap();
 const fadingHiddenTimers = new WeakMap();
@@ -78,9 +88,13 @@ function applyTheme(theme) {
 }
 
 function notify(message, isError = false) {
+  cancelUpdatePrompt?.();
+  setUpdatePromptBlocking(false);
   clearTimeout(toastTimer);
   clearTimeout(toastHideTimer);
-  toast.textContent = message;
+  toastMessage.textContent = message;
+  updatePrompt.hidden = true;
+  toastMessage.hidden = false;
   toast.dataset.error = String(isError);
   toast.classList.remove("is-capture-prompt");
   toast.hidden = false;
@@ -101,11 +115,74 @@ function notify(message, isError = false) {
 function showCapturePrompt() {
   clearTimeout(toastTimer);
   clearTimeout(toastHideTimer);
-  toast.textContent = "Press Escape to cancel";
+  toastMessage.textContent = "Press Escape to cancel";
+  toastMessage.hidden = false;
+  updatePrompt.hidden = true;
   toast.dataset.error = "false";
   toast.classList.add("is-capture-prompt");
   toast.hidden = false;
   requestAnimationFrame(() => toast.classList.add("is-visible"));
+}
+
+function setUpdatePromptBlocking(blocked) {
+  appFrame.classList.toggle("is-update-prompt", blocked);
+  Array.from(appFrame.children).filter((child) => child.id !== "toast").forEach((child) => { child.inert = blocked; });
+}
+
+function showUpdatePrompt({ focus = true, returnFocus = null } = {}) {
+  clearTimeout(toastTimer);
+  clearTimeout(toastHideTimer);
+  toast.dataset.error = "false";
+  toastMessage.hidden = true;
+  updatePrompt.hidden = false;
+  updatePromptActions.hidden = false;
+  updatePromptMessage.textContent = "A new version of vibeclicker is available.";
+  toast.hidden = false;
+  toast.classList.remove("is-capture-prompt");
+  setUpdatePromptBlocking(true);
+  requestAnimationFrame(() => toast.classList.add("is-visible"));
+  const focusTarget = returnFocus || (focus ? document.activeElement : null);
+  if (focus) $("#update-now").focus();
+  return new Promise((resolve) => {
+    const removeActions = () => {
+      $("#update-now").removeEventListener("click", updateHandler);
+      $("#update-later").removeEventListener("click", laterHandler);
+    };
+    const laterHandler = () => {
+      removeActions();
+      cancelUpdatePrompt = null;
+      setUpdatePromptBlocking(false);
+      updatePromptActions.hidden = true;
+      updatePrompt.hidden = true;
+      toast.classList.remove("is-visible");
+      toastHideTimer = setTimeout(() => { toast.hidden = true; }, 220);
+      if (focusTarget instanceof HTMLElement) setTimeout(() => focusTarget.focus(), 0);
+      resolve(false);
+    };
+    const updateHandler = () => {
+      removeActions();
+      cancelUpdatePrompt = null;
+      updatePromptActions.hidden = true;
+      resolve(true);
+    };
+    $("#update-now").addEventListener("click", updateHandler, { once: true });
+    $("#update-later").addEventListener("click", laterHandler, { once: true });
+    cancelUpdatePrompt = () => {
+      removeActions();
+      cancelUpdatePrompt = null;
+      updatePromptActions.hidden = true;
+      resolve(false);
+    };
+  });
+}
+
+function setUpdatePromptProgress(message) {
+  clearTimeout(toastHideTimer);
+  updatePromptMessage.textContent = message;
+  updatePrompt.hidden = false;
+  toastMessage.hidden = true;
+  toast.hidden = false;
+  toast.classList.add("is-visible");
 }
 
 function setCaptureLayer(isActive) {
@@ -298,7 +375,7 @@ function syncWindowHeight() {
     if (height === lastWindowHeight && landscape === lastWindowLandscape) return;
     lastWindowHeight = height;
     lastWindowLandscape = landscape;
-    invoke("set_window_content_height", { height, landscape }).catch(() => {});
+    invokeTauri("set_window_content_height", { height, landscape }).catch(() => {});
   });
 }
 
@@ -385,7 +462,7 @@ async function saveSettingsNow() {
   clearTimeout(saveTimer);
   saveTimer = null;
   try {
-    await invoke("save_settings", { config: { ...config } });
+    await invokeTauri("save_settings", { config: { ...config } });
   } catch (error) {
     const message = String(error);
     let userMessage = message;
@@ -408,7 +485,7 @@ function setSegmentValue(group, value) {
 
 function setView(view) {
   currentView = view;
-  invoke("set_clicking_allowed", { allowed: view === "main" })
+  invokeTauri("set_clicking_allowed", { allowed: view === "main" })
     .then((state) => setActive(state.active))
     .catch((error) => {
       if (window.__TAURI_INTERNALS__) notify(String(error), true);
@@ -426,7 +503,7 @@ function setView(view) {
 
 async function loadSettings() {
   try {
-    Object.assign(config, await invoke("get_settings"));
+    Object.assign(config, await invokeTauri("get_settings"));
   } catch {
     // Browser preview uses defaults; the desktop build reads its saved config.
   }
@@ -481,7 +558,7 @@ function disableContinuousForIntervalEdit() {
   if (config.clickType !== "continuous" || config.continuousEnabled === false) return;
   config.continuousEnabled = false;
   updateContinuousModeUI();
-  invoke("set_continuous_enabled", { enabled: false })
+  invokeTauri("set_continuous_enabled", { enabled: false })
     .then((state) => setActive(state.active))
     .catch((error) => notify(String(error), true));
 }
@@ -553,7 +630,7 @@ statusPill.addEventListener("click", async () => {
     notify("At least one interval field must be filled", true);
     return;
   }
-  try { await invoke("set_continuous_enabled", { enabled: next }); config.continuousEnabled = next; updateContinuousModeUI(); }
+  try { await invokeTauri("set_continuous_enabled", { enabled: next }); config.continuousEnabled = next; updateContinuousModeUI(); }
   catch (error) { notify(String(error), true); }
 });
 
@@ -561,7 +638,7 @@ $$('[data-setting="theme"] button').forEach((button) => button.addEventListener(
   config.theme = button.dataset.value;
   setSegmentValue(button.closest("[data-setting]"), config.theme);
   applyTheme(config.theme);
-  invoke("set_theme", { theme: config.theme }).catch((error) => notify(String(error), true));
+  invokeTauri("set_theme", { theme: config.theme }).catch((error) => notify(String(error), true));
 }));
 
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
@@ -572,7 +649,7 @@ $("#always-on-top").addEventListener("click", async (event) => {
   const toggle = event.currentTarget;
   const next = toggle.getAttribute("aria-checked") !== "true";
   try {
-    await invoke("set_always_on_top", { enabled: next });
+    await invokeTauri("set_always_on_top", { enabled: next });
     config.alwaysOnTop = next;
     toggle.setAttribute("aria-checked", String(next));
   } catch (error) { notify(String(error), true); }
@@ -583,7 +660,7 @@ $("#transparency-effects").addEventListener("click", async (event) => {
   const next = toggle.getAttribute("aria-checked") !== "true";
   toggle.disabled = true;
   try {
-    await invoke("set_transparency_effects", { enabled: next });
+    await invokeTauri("set_transparency_effects", { enabled: next });
     config.transparencyEffects = next;
     toggle.setAttribute("aria-checked", String(next));
     document.documentElement.dataset.transparencyEffects = String(next);
@@ -630,10 +707,10 @@ async function captureInput(keyCode, modifiers = 0) {
   updateHotkeyBadge();
   try {
     if (target === "hotkey") {
-      await invoke("register_hotkey", { hotkey });
+      await invokeTauri("register_hotkey", { hotkey });
       config.hotkey = hotkey;
     } else {
-      await invoke("set_keyboard_key", { keyCode: hotkey.keyCode });
+      await invokeTauri("set_keyboard_key", { keyCode: hotkey.keyCode });
       config.keyboardKey = hotkey.keyCode;
     }
   } catch (error) {
@@ -654,6 +731,19 @@ async function captureInput(keyCode, modifiers = 0) {
 }
 
 window.addEventListener("keydown", async (event) => {
+  if (appFrame.classList.contains("is-update-prompt") && event.key === "Escape") {
+    event.preventDefault();
+    $("#update-later").click();
+    return;
+  }
+  if (appFrame.classList.contains("is-update-prompt") && event.key === "Tab") {
+    const actions = [$("#update-now"), $("#update-later")];
+    const index = actions.indexOf(document.activeElement);
+    const next = event.shiftKey ? (index <= 0 ? actions.length - 1 : index - 1) : (index === actions.length - 1 ? 0 : index + 1);
+    event.preventDefault();
+    actions[next].focus();
+    return;
+  }
   if (!captureTarget) return;
   event.preventDefault();
   event.stopPropagation();
@@ -698,7 +788,7 @@ actionButton.addEventListener("click", async () => {
   }
   actionButton.disabled = true;
   try {
-    const state = await invoke(active ? "stop_clicking" : "start_clicking");
+    const state = await invokeTauri(active ? "stop_clicking" : "start_clicking");
     setActive(state.active);
   } catch (error) { notify(String(error), true); }
   finally { actionButton.disabled = false; }
@@ -709,8 +799,40 @@ $("#github-link").addEventListener("click", async () => {
   catch (error) { notify(`Could not open GitHub: ${error}`, true); }
 });
 
+async function installUpdate(update) {
+  let downloaded = 0;
+  let contentLength = 0;
+  setUpdatePromptProgress("Downloading update...");
+  await update.downloadAndInstall((event) => {
+    if (event.event === "Started") {
+      contentLength = event.data.contentLength || 0;
+    } else if (event.event === "Progress") {
+      downloaded += event.data.chunkLength;
+      setUpdatePromptProgress(contentLength > 0 ? `Downloading update… ${Math.round(downloaded / contentLength * 100)}%` : "Downloading update…");
+    } else if (event.event === "Finished") {
+      setUpdatePromptProgress("Installing update…");
+    }
+  });
+  setUpdatePromptProgress("Restarting…");
+  await relaunch();
+}
+
 $("#check-for-updates").addEventListener("click", async (event) => {
   const button = event.currentTarget;
+  if (import.meta.env.DEV) {
+    if (updateCheckInProgress) return;
+    updateCheckInProgress = true;
+    button.disabled = true;
+    try {
+      if (await showUpdatePrompt({ returnFocus: button })) {
+        notify("Preview only: no update was downloaded or installed.");
+      }
+    } finally {
+      updateCheckInProgress = false;
+      button.disabled = false;
+    }
+    return;
+  }
   if (!window.__TAURI_INTERNALS__) {
     notify("Updates are available in the installed app.", true);
     return;
@@ -722,28 +844,12 @@ $("#check-for-updates").addEventListener("click", async (event) => {
     label.textContent = "Checking...";
     updateCheckInProgress = true;
     const update = await check();
-    updateCheckInProgress = false;
     if (!update) {
+      updateCheckInProgress = false;
       notify("You are up to date.");
       return;
     }
-    const confirmed = window.confirm(`vibeclicker ${update.version} is available. Install it now?`);
-    if (!confirmed) return;
-    let downloaded = 0;
-    let contentLength = 0;
-    label.textContent = "Downloading...";
-    await update.downloadAndInstall((event) => {
-      if (event.event === "Started") {
-        contentLength = event.data.contentLength || 0;
-      } else if (event.event === "Progress") {
-        downloaded += event.data.chunkLength;
-        if (contentLength > 0) label.textContent = `Downloading ${Math.round(downloaded / contentLength * 100)}%`;
-      } else if (event.event === "Finished") {
-        label.textContent = "Installing...";
-      }
-    });
-    label.textContent = "Restarting...";
-    await relaunch();
+    if (await showUpdatePrompt({ returnFocus: button })) await installUpdate(update);
   } catch (error) {
     updateCheckInProgress = false;
     label.textContent = "Check for updates";
@@ -807,13 +913,15 @@ $(".input-mode-switch").addEventListener("keydown", (event) => {
   selectInputMode(tabs[nextIndex].dataset.inputMode, true);
 });
 
-listen("clicker://state", (event) => setActive(event.payload.active));
-listen("clicker://continuous-enabled", (event) => { config.continuousEnabled = Boolean(event.payload); updateContinuousModeUI(); }).catch(() => {});
-listen("clicker://rate", (event) => {
-  const rate = Number(event.payload.measuredCps);
-  statusPill.title = active ? `${rate.toFixed(1)} accepted inputs per second` : "Idle";
-}).catch(() => {});
-listen("clicker://error", (event) => notify(event.payload, true)).catch(() => {});
+if (isTauriRuntime()) {
+  listen("clicker://state", (event) => setActive(event.payload.active));
+  listen("clicker://continuous-enabled", (event) => { config.continuousEnabled = Boolean(event.payload); updateContinuousModeUI(); }).catch(() => {});
+  listen("clicker://rate", (event) => {
+    const rate = Number(event.payload.measuredCps);
+    statusPill.title = active ? `${rate.toFixed(1)} accepted inputs per second` : "Idle";
+  }).catch(() => {});
+  listen("clicker://error", (event) => notify(event.payload, true)).catch(() => {});
+}
 
 refreshIcons();
 loadSettings();
@@ -822,10 +930,19 @@ syncWindowHeight();
 
 if (!import.meta.env.DEV && window.__TAURI_INTERNALS__) {
   updateCheckInProgress = true;
-  check().then((update) => {
-    if (update) notify(`vibeclicker ${update.version} is available. Check for updates to install it.`);
+  check().then(async (update) => {
+    if (update && await showUpdatePrompt()) await installUpdate(update);
   }).catch((error) => {
     notify(`Could not check for updates: ${error}`, true);
+  }).finally(() => {
+    updateCheckInProgress = false;
+  });
+}
+
+if (previewUpdatePrompt) {
+  updateCheckInProgress = true;
+  showUpdatePrompt().then((shouldInstall) => {
+    if (shouldInstall) notify("Preview only: no update was downloaded or installed.");
   }).finally(() => {
     updateCheckInProgress = false;
   });

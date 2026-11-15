@@ -128,7 +128,7 @@
             </section>
 
             <section class="surface-card about-card" aria-label="About">
-              <div class="about-copy"><p>vibeclicker</p><span class="version-label">Version 0.3.1</span></div>
+              <div class="about-copy"><p>vibeclicker</p><span class="version-label">Version 0.3.2</span></div>
               <div class="about-actions">
                 <button id="check-for-updates" class="secondary-button" type="button"><i data-lucide="download" aria-hidden="true"></i><span>Check for updates</span></button>
                 <button id="github-link" class="secondary-button github-button" type="button">
@@ -145,7 +145,16 @@
           <i data-lucide="play" aria-hidden="true"></i><span>Start clicking</span>
         </button>
       </footer>
-      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden>
+        <div id="toast-message"></div>
+        <div id="update-prompt" class="update-prompt" role="dialog" aria-modal="true" aria-label="Available update" hidden>
+          <div id="update-prompt-message"></div>
+          <div class="update-prompt-actions">
+            <button id="update-now" class="primary-action update-now-button" type="button">Update now</button>
+            <button id="update-later" class="secondary-button" type="button">Later</button>
+          </div>
+        </div>
+      </div>
     </div>
     <script type="module" src="/src/main.js"></script>
   </body>

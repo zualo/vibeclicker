@@ -163,9 +163,17 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--text); outl
 .toast.is-capture-prompt.is-visible { transform: translate(-50%, -50%); }
 .app-frame::before { position: fixed; z-index: 10; inset: 0; background: color-mix(in srgb, var(--canvas) 38%, transparent); content: ""; opacity: 0; pointer-events: none; -webkit-backdrop-filter: blur(4px) saturate(.88); backdrop-filter: blur(4px) saturate(.88); transition: opacity 180ms ease, visibility 180ms ease; visibility: hidden; }
 .app-frame.is-capturing::before { opacity: 1; pointer-events: auto; visibility: visible; }
+.app-frame.is-update-prompt::before { z-index: 19; opacity: 1; pointer-events: auto; visibility: visible; }
 .app-frame.is-capturing > #toast { z-index: 30; }
 .toast[hidden] { display: none; }
 .toast[data-error="true"] { border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); color: var(--danger); }
+.toast:has(.update-prompt:not([hidden])) { z-index: 20; width: max-content; max-width: min(430px, calc(100vw - 32px)); padding: 18px; pointer-events: auto; }
+.update-prompt[hidden] { display: none; }
+.update-prompt { display: grid; gap: 14px; text-align: center; }
+.update-prompt-actions { display: flex; justify-content: center; gap: 8px; }
+.update-prompt-actions button { min-height: 34px; padding: 0 12px; cursor: pointer; }
+.update-prompt-actions .update-now-button { width: auto; min-height: 34px; border-radius: 8px; font-size: 12px; }
+.update-prompt-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 @media (prefers-reduced-motion: reduce) {
   .toast, .app-frame::before, .hotkey-card, .primary-action { transition: none; }
