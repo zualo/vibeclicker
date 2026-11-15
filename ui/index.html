@@ -13,7 +13,7 @@
           <button class="tab-button is-selected" type="button" data-view="main" aria-current="page" tabindex="0">Main</button>
           <button class="tab-button" type="button" data-view="settings" tabindex="-1">Settings</button>
         </nav>
-        <button class="switch status-pill" id="status-pill" data-state="idle" role="switch" aria-checked="true" aria-label="Continuous mode enabled" title="Continuous mode enabled">
+        <button class="switch status-pill" id="status-pill" data-state="idle" type="button" role="status" disabled aria-label="Idle" title="Idle">
           <span aria-hidden="true"></span>
         </button>
       </header>
@@ -21,10 +21,7 @@
       <main class="view-stack flex-1">
         <section class="view-panel main-view" data-panel="main" aria-label="Main">
           <div class="main-grid grid">
-            <section class="surface-card interval-card" aria-labelledby="interval-title">
-              <div class="card-heading flex items-center justify-between">
-                <h1 id="interval-title">Click Interval</h1>
-              </div>
+            <section class="surface-card interval-card" aria-label="Click interval">
               <div class="option-segment rate-entry-switch" role="group" aria-label="Rate entry mode">
                 <button type="button" data-rate-entry="cps" aria-pressed="true" tabindex="0">Clicks per second</button>
                 <button type="button" data-rate-entry="interval" aria-pressed="false" tabindex="-1">Timed interval</button>
@@ -54,8 +51,7 @@
               </div>
             </section>
 
-            <section class="surface-card config-card" aria-labelledby="config-title">
-              <div class="card-heading"><h2 id="config-title">Click Configuration</h2></div>
+            <section class="surface-card config-card" aria-label="Click configuration">
               <div class="tab-switch input-mode-switch" role="tablist" aria-label="Input type">
                 <button class="tab-button is-selected" id="mouse-mode-tab" type="button" role="tab" data-input-mode="mouse" aria-selected="true">Mouse</button>
                 <button class="tab-button" id="keyboard-mode-tab" type="button" role="tab" data-input-mode="keyboard" aria-selected="false">Keyboard</button>
@@ -104,8 +100,7 @@
 
         <section class="view-panel settings-view" data-panel="settings" aria-label="Settings" hidden>
           <div class="settings-stack">
-            <section class="surface-card preferences-card" aria-labelledby="preferences-title">
-              <div class="card-heading"><h1 id="preferences-title">UI Preferences</h1></div>
+            <section class="surface-card preferences-card" aria-label="UI Preferences">
               <div class="preference-row">
                 <div class="preference-copy"><h2>Appearance</h2></div>
                 <div class="option-segment compact" data-setting="theme" role="group" aria-label="Appearance">
@@ -132,8 +127,8 @@
               </div>
             </section>
 
-            <section class="surface-card about-card" aria-labelledby="about-title">
-              <div class="about-copy"><div class="card-heading"><h2 id="about-title">About</h2></div><p>vibeclicker</p><span class="version-label">Version 0.3.0</span></div>
+            <section class="surface-card about-card" aria-label="About">
+              <div class="about-copy"><p>vibeclicker</p><span class="version-label">Version 0.3.1</span></div>
               <div class="about-actions">
                 <button id="check-for-updates" class="secondary-button" type="button"><i data-lucide="download" aria-hidden="true"></i><span>Check for updates</span></button>
                 <button id="github-link" class="secondary-button github-button" type="button">

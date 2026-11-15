@@ -153,7 +153,9 @@ pub fn load_config() -> AppConfig {
     if !config.cps.is_finite() || config.cps <= 0.0 { config.cps = 100.0; }
     config.cps = config.cps.clamp(1.0, 2000.0);
     let interval_ms = config.interval_ms.unwrap_or(1000.0 / config.cps);
-    let interval_ms = if interval_ms.is_finite() && interval_ms > 0.0 {
+    let interval_ms = if interval_ms == 0.0 {
+        0.0
+    } else if interval_ms.is_finite() && interval_ms >= 0.5 {
         interval_ms.clamp(0.5, 86_400_000.0)
     } else { 10.0 };
     config.interval_ms = Some(interval_ms);

@@ -55,21 +55,6 @@
 * { box-sizing: border-box; -webkit-user-select: none; user-select: none; }
 html, body, #app { width: 100%; min-width: 0; min-height: 100%; margin: 0; }
 body { min-height: 100vh; background: var(--canvas); color: var(--text); font-size: 12px; }
-:root[data-transparency-effects="true"] { background: transparent; }
-:root[data-transparency-effects="true"] body { background: transparent; }
-:root[data-transparency-effects="true"] .surface-card { background: color-mix(in srgb, var(--surface) 88%, transparent); }
-:root[data-transparency-effects="true"] .tab-switch,
-:root[data-transparency-effects="true"] .option-segment,
-:root[data-transparency-effects="true"] .rate-input-wrap,
-:root[data-transparency-effects="true"] .time-field input,
-:root[data-transparency-effects="true"] .key-badge,
-:root[data-transparency-effects="true"] .secondary-button,
-:root[data-transparency-effects="true"] .switch { background-color: color-mix(in srgb, var(--surface-raised) 90%, transparent); }
-:root[data-transparency-effects="true"] .switch[aria-checked="true"],
-:root[data-transparency-effects="true"] .status-pill[data-state="active"] { border-color: var(--text); background-color: var(--text); }
-:root[data-transparency-effects="true"] .switch[aria-checked="true"] span,
-:root[data-transparency-effects="true"] .status-pill[data-state="active"] span { background-color: var(--accent-text); }
-:root[data-transparency-effects="true"] .option-segment button[aria-pressed="true"] { background-color: var(--surface-selected); color: var(--text); }
 button, input { font: inherit; }
 input { -webkit-user-select: text; user-select: text; }
 button { color: inherit; }
@@ -79,8 +64,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--text); outl
 ::-webkit-scrollbar { width: 10px; }
 ::-webkit-scrollbar-thumb { border: 3px solid var(--canvas); border-radius: 99px; background: #686868; }
 
-.app-frame { max-width: 1040px; min-height: 100vh; margin: 0 auto; padding: 22px clamp(16px, 3vw, 30px) 18px; }
-.topbar { min-height: 44px; margin-bottom: 18px; }
+.app-frame { max-width: 1040px; min-height: 100vh; margin: 0 auto; padding: 12px; }
+.topbar { min-height: 40px; margin-bottom: 12px; }
 .tab-switch, .option-segment { display: inline-flex; align-items: center; gap: 3px; padding: 3px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--field); }
 .tab-button { min-width: 76px; height: 32px; padding: 0 14px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; font-weight: 550; transition: background 150ms ease, color 150ms ease; }
 .tab-button:hover { color: var(--text); }
@@ -139,8 +124,9 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--text); outl
 .secondary-button:disabled { cursor: default; opacity: .55; }
 .secondary-button svg { width: 14px; height: 14px; }
 .settings-stack { display: grid; min-width: 0; gap: 12px; }
-.preferences-card .card-heading { margin-bottom: 4px; }
 .preference-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 15px 0; border-bottom: 1px solid var(--border-soft); }
+.preferences-card .preference-row:first-child { padding-top: 0; }
+.preferences-card .preference-row:last-child { padding-bottom: 0; border-bottom: 0; }
 .preference-copy { min-width: 0; }
 .preference-copy h2 { margin: 0; font-size: 13px; font-weight: 560; }
 .option-segment.compact { width: auto; flex: none; }
@@ -156,7 +142,6 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--text); outl
 .switch.status-pill:disabled { cursor: default; opacity: 1; }
 .about-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .about-actions { display: flex; align-items: center; gap: 10px; }
-.about-copy .card-heading { margin-bottom: 8px; }
 .about-copy > p { margin: 0 0 4px; color: var(--text); font-size: 13px; font-weight: 550; }
 .version-label { color: var(--muted); font-size: 11px; }
 .github-button { min-height: 36px; }
@@ -172,9 +157,9 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--text); outl
 .primary-action:disabled { cursor: wait; opacity: .65; }
 .primary-action.is-fading-out { opacity: 0; transform: translateY(-4px); pointer-events: none; }
 .primary-action svg { width: 16px; height: 16px; }
-.toast { position: fixed; z-index: 20; top: 50%; left: 50%; max-width: min(430px, calc(100vw - 32px)); padding: 11px 14px; transform: translate(-50%, calc(-50% - 12px)); border: 1px solid var(--border); border-radius: 9px; background: var(--surface-raised); color: var(--text); box-shadow: 0 8px 24px rgb(0 0 0 / .24); opacity: 0; pointer-events: none; font-size: 12px; line-height: 1.45; transition: transform 220ms cubic-bezier(.2, .8, .2, 1), opacity 180ms ease; }
+.toast { position: fixed; z-index: 20; top: 50%; left: 50%; max-width: min(430px, calc(100vw - 32px)); padding: 11px 14px; transform: translate(-50%, calc(-50% - 12px)); border: 1px solid var(--border); border-radius: 9px; background: var(--surface-raised); color: var(--text); opacity: 0; pointer-events: none; font-size: 12px; line-height: 1.45; transition: transform 220ms cubic-bezier(.2, .8, .2, 1), opacity 180ms ease; }
 .toast.is-visible { transform: translate(-50%, -50%); opacity: 1; }
-.toast.is-capture-prompt { top: 50%; transform: translate(-50%, calc(-50% - 12px)); box-shadow: none; }
+.toast.is-capture-prompt { top: 50%; transform: translate(-50%, calc(-50% - 12px)); }
 .toast.is-capture-prompt.is-visible { transform: translate(-50%, -50%); }
 .app-frame::before { position: fixed; z-index: 10; inset: 0; background: color-mix(in srgb, var(--canvas) 38%, transparent); content: ""; opacity: 0; pointer-events: none; -webkit-backdrop-filter: blur(4px) saturate(.88); backdrop-filter: blur(4px) saturate(.88); transition: opacity 180ms ease, visibility 180ms ease; visibility: hidden; }
 .app-frame.is-capturing::before { opacity: 1; pointer-events: auto; visibility: visible; }
@@ -188,13 +173,12 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--text); outl
 
 @media (min-width: 700px) {
   .main-grid { grid-template-columns: minmax(0, 1.08fr) minmax(270px, .92fr); align-content: start; }
-  .hotkey-card { grid-column: 1 / -1; min-height: 96px; }
+  .hotkey-card { grid-column: 1 / -1; min-height: 74px; }
   .time-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .action-footer { min-height: 58px; }
 }
 
 @media (max-width: 520px) {
-  .app-frame { padding: 14px 12px; }
   .topbar { gap: 10px; margin-bottom: 12px; }
   .surface-card { padding: 15px; }
   .preference-row { align-items: flex-start; flex-direction: column; gap: 11px; }
@@ -205,3 +189,18 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--text); outl
   .github-button { width: 100%; }
   .action-footer { min-height: 58px; }
 }
+:root[data-transparency-effects="true"] { background: transparent; }
+:root[data-transparency-effects="true"] body { background: transparent; }
+:root[data-transparency-effects="true"] .surface-card { background: color-mix(in srgb, var(--surface) 88%, transparent); }
+:root[data-transparency-effects="true"] .tab-switch,
+:root[data-transparency-effects="true"] .option-segment,
+:root[data-transparency-effects="true"] .rate-input-wrap,
+:root[data-transparency-effects="true"] .time-field input,
+:root[data-transparency-effects="true"] .key-badge,
+:root[data-transparency-effects="true"] .secondary-button,
+:root[data-transparency-effects="true"] .switch { background-color: color-mix(in srgb, var(--surface-raised) 90%, transparent); }
+:root[data-transparency-effects="true"] .switch[aria-checked="true"],
+:root[data-transparency-effects="true"] .status-pill[data-state="active"] { border-color: var(--text); background-color: var(--text); }
+:root[data-transparency-effects="true"] .switch[aria-checked="true"] span,
+:root[data-transparency-effects="true"] .status-pill[data-state="active"] span { background-color: var(--accent-text); }
+:root[data-transparency-effects="true"] .option-segment button[aria-pressed="true"] { background-color: var(--surface-selected); color: var(--text); }

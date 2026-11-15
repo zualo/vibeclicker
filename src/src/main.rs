@@ -123,23 +123,43 @@ fn set_clicking_allowed(allowed: bool, state: State<'_, AppState>) -> Result<Cli
 }
 
 #[tauri::command]
-fn set_window_content_height(height: f64, window: WebviewWindow) -> Result<(), String> {
-    const MIN_HEIGHT: f64 = 558.0;
+fn set_window_content_height(height: f64, landscape: bool, window: WebviewWindow) -> Result<(), String> {
+    const MIN_HEIGHT: f64 = 480.0;
     const MAX_HEIGHT: f64 = 1600.0;
     let height = if height.is_finite() {
-        height.clamp(MIN_HEIGHT, MAX_HEIGHT)
+        if landscape { height.clamp(1.0, MAX_HEIGHT) } else { height.clamp(MIN_HEIGHT, MAX_HEIGHT) }
     } else {
         return Err("Window height is invalid".into());
     };
+    let min_height = if landscape { height } else { MIN_HEIGHT };
+    // Portrait's maximum follows the frontend's viewport-independent natural
+    // content measurement, with the same safety ceiling used to validate it.
+    let max_height = height;
     window
-        .set_max_size(Some(LogicalSize::new(700.0, height)))
+        .set_min_size(None::<LogicalSize<f64>>)
+        .map_err(|error| error.to_string())?;
+    window
+        .set_max_size(None::<LogicalSize<f64>>)
+        .map_err(|error| error.to_string())?;
+    window
+        .set_min_size(Some(LogicalSize::new(420.0, min_height)))
+        .map_err(|error| error.to_string())?;
+    window
+        .set_max_size(Some(LogicalSize::new(700.0, max_height)))
         .map_err(|error| error.to_string())?;
     let scale_factor = window.scale_factor().map_err(|error| error.to_string())?;
     let current = window
         .inner_size()
         .map_err(|error| error.to_string())?
         .to_logical::<f64>(scale_factor);
-    if (current.height - height).abs() > 0.5 {
+    // Landscape is content-sized. Portrait preserves the user's chosen height
+    // unless a reduced content cap now puts the current window above it.
+    let should_resize = if landscape {
+        (current.height - height).abs() > 0.5
+    } else {
+        current.height > height + 0.5
+    };
+    if should_resize {
         window
             .set_size(LogicalSize::new(current.width, height))
             .map_err(|error| error.to_string())?;
@@ -151,6 +171,9 @@ fn set_window_content_height(height: f64, window: WebviewWindow) -> Result<(), S
 fn set_continuous_enabled(enabled: bool, state: State<'_, AppState>) -> Result<ClickerState, String> {
     let mut config = state.config.lock().map_err(|_| "Settings are unavailable")?;
     let engine = state.engine.lock().map_err(|_| "Click engine is unavailable")?;
+    if enabled && !engine.can_start() {
+        return Err("At least one interval field must be filled".into());
+    }
     let previous = config.continuous_enabled;
     engine.set_continuous_enabled(enabled);
     config.continuous_enabled = enabled;
@@ -218,8 +241,8 @@ fn save_settings(
         return Err("Click rate must be between 1 and 2000 CPS".into());
     }
     let interval_ms = config.interval_ms.unwrap_or(1000.0 / config.cps);
-    if !interval_ms.is_finite() || !(0.5..=86_400_000.0).contains(&interval_ms) {
-        return Err("Interval must be between 0.5 milliseconds and 24 hours".into());
+    if !interval_ms.is_finite() || interval_ms < 0.0 || (interval_ms > 0.0 && interval_ms < 0.5) || interval_ms > 86_400_000.0 {
+        return Err("Interval must be 0 or between 0.5 milliseconds and 24 hours".into());
     }
     config.interval_ms = Some(interval_ms);
     if config.mouse_buttons.is_empty() { config.mouse_buttons = vec![config.mouse_button]; }
@@ -238,12 +261,16 @@ fn save_settings(
     if config.click_type == settings::ClickType::Continuous && !engine.continuous_supported() {
         return Err("Continuous mode is unavailable because Windows could not monitor held inputs".into());
     }
+    let interval_changed = config.interval_ms != current.interval_ms;
+    if interval_changed {
+        config.continuous_enabled = false;
+    }
     if config.hotkey != current.hotkey {
         engine.set_hotkey(config.hotkey)?;
     }
+    engine.set_rate_entry_mode(config.rate_entry_mode);
     engine.set_interval_ms(interval_ms)?;
     engine.set_cps(config.cps)?;
-    engine.set_rate_entry_mode(config.rate_entry_mode);
     engine.set_human_like(config.human_like_behavior && config.rate_entry_mode == settings::RateEntryMode::Cps);
     engine.set_continuous_enabled(config.continuous_enabled);
     engine.set_click_options(click_options(&config))?;
@@ -256,9 +283,10 @@ fn save_settings(
     set_tray_visibility(&app, next_tray_visible)?;
     config.transparent = current.transparent;
     if let Err(error) = save_config(&config) {
-        let _ = engine.set_interval_ms(current.interval_ms.unwrap_or(1000.0 / current.cps));
-        let _ = engine.set_cps(current.cps);
         engine.set_rate_entry_mode(current.rate_entry_mode);
+        let _ = engine.set_interval_ms(current.interval_ms.unwrap_or(1000.0 / current.cps));
+        engine.set_continuous_enabled(current.continuous_enabled);
+        let _ = engine.set_cps(current.cps);
         let _ = engine.set_click_options(click_options(&current));
         let _ = window.set_always_on_top(current.always_on_top);
         let _ = set_tray_visibility(&app, previous_tray_visible);
@@ -301,39 +329,14 @@ fn set_theme(theme: settings::ThemePreference, state: State<'_, AppState>, windo
         .lock()
         .map_err(|_| "Settings are unavailable")?;
     let previous = config.theme;
-    if config.transparency_effects {
-        set_native_acrylic(&window, true, theme)?;
-    }
+    set_native_acrylic(&window, config.transparency_effects, theme)?;
     config.theme = theme;
     if let Err(error) = save_config(&config) {
         config.theme = previous;
-        // Restore the system tint if persistence fails.
-        if config.transparency_effects { let _ = set_native_acrylic(&window, true, previous); }
+        let _ = set_native_acrylic(&window, config.transparency_effects, previous);
         return Err(error);
     }
     Ok(())
-}
-
-fn set_native_acrylic(window: &WebviewWindow, enabled: bool, theme: settings::ThemePreference) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        let dark = match theme {
-            settings::ThemePreference::Dark => true,
-            settings::ThemePreference::Light => false,
-            settings::ThemePreference::System => window.theme().map(|theme| theme == tauri::Theme::Dark).unwrap_or(true),
-        };
-        if enabled {
-            let tint = if dark { (32, 32, 32, 150) } else { (242, 242, 242, 150) };
-            window_vibrancy::apply_acrylic(window, Some(tint)).map_err(|error| error.to_string())
-        } else {
-            window_vibrancy::clear_acrylic(window).map_err(|error| error.to_string())
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (window, enabled, theme);
-        Err("Transparency effects are only available on Windows".into())
-    }
 }
 
 #[tauri::command]
@@ -359,6 +362,54 @@ fn set_transparency_effects(
     Ok(())
 }
 
+fn set_native_acrylic(window: &WebviewWindow, enabled: bool, theme: settings::ThemePreference) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let dark = match theme {
+            settings::ThemePreference::Dark => true,
+            settings::ThemePreference::Light => false,
+            settings::ThemePreference::System => window.theme().map(|theme| theme == tauri::Theme::Dark).unwrap_or(true),
+        };
+        if enabled {
+            let tint = if dark { (32, 32, 32, 150) } else { (242, 242, 242, 150) };
+            window_vibrancy::apply_acrylic(window, Some(tint)).map_err(|error| error.to_string())
+        } else {
+            // DWMWA_USE_IMMERSIVE_DARK_MODE = 20 and
+            // DWMWA_SYSTEMBACKDROP_TYPE = 38; DWMSBT_AUTO = 0. AUTO restores
+            // the native title bar backdrop after Acrylic is removed.
+            use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
+            let native_hwnd = window.hwnd().map_err(|error| error.to_string())?;
+            let hwnd = windows::Win32::Foundation::HWND(native_hwnd.0);
+            let dark_mode: i32 = i32::from(dark);
+            let backdrop: i32 = 0;
+            let restored = unsafe {
+                let theme_result = DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWINDOWATTRIBUTE(20),
+                    &dark_mode as *const _ as *const _,
+                    std::mem::size_of_val(&dark_mode) as u32,
+                );
+                if theme_result.is_err() { theme_result }
+                else {
+                    DwmSetWindowAttribute(
+                        hwnd,
+                        DWMWINDOWATTRIBUTE(38),
+                        &backdrop as *const _ as *const _,
+                        std::mem::size_of_val(&backdrop) as u32,
+                    )
+                }
+            };
+            if restored.is_ok() { Ok(()) }
+            else { window_vibrancy::clear_acrylic(window).map_err(|error| error.to_string()) }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, enabled, theme);
+        Err("Transparency effects are only available on Windows".into())
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -381,9 +432,9 @@ fn main() {
             engine.set_click_options(click_options(&config)).map_err(std::io::Error::other)?;
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_always_on_top(config.always_on_top);
-                if config.transparency_effects && set_native_acrylic(&window, true, config.theme).is_err() {
-                    let _ = set_native_acrylic(&window, false, config.theme);
+                if set_native_acrylic(&window, config.transparency_effects, config.theme).is_err() && config.transparency_effects {
                     config.transparency_effects = false;
+                    let _ = set_native_acrylic(&window, false, config.theme);
                     let _ = save_config(&config);
                 }
                 #[cfg(windows)]
@@ -486,6 +537,9 @@ fn main() {
                         }
                         EngineEvent::HotkeyError(message) => {
                             let _ = handle.emit("clicker://error", message);
+                        }
+                        EngineEvent::InvalidTimedIntervalStart => {
+                            let _ = handle.emit("clicker://error", "At least one interval field must be filled");
                         }
                         EngineEvent::RateSample { clicks, elapsed_ms } => {
                             let _ = handle.emit(

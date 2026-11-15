@@ -59,8 +59,9 @@ const appFrame = $(".app-frame");
 const fadingHiddenTargets = new WeakMap();
 const fadingHiddenTimers = new WeakMap();
 const VISIBILITY_FADE_MS = 120;
-const MIN_WINDOW_HEIGHT = 558;
+const MIN_WINDOW_HEIGHT = 480;
 let lastWindowHeight = null;
+let lastWindowLandscape = null;
 
 const iconDefinitions = { ArrowUpRight, Check, CircleStop, Download, Github, Keyboard, Play };
 const refreshIcons = () => {
@@ -126,15 +127,7 @@ function dismissCapturePrompt() {
 function setActive(next) {
   active = next;
   statusPill.dataset.state = active ? "active" : "idle";
-  if (config.clickType === "continuous") {
-    const enabled = config.continuousEnabled !== false;
-    statusPill.setAttribute("aria-checked", String(enabled));
-    statusPill.setAttribute("aria-label", enabled ? "Continuous mode enabled" : "Continuous mode disabled");
-    statusPill.title = enabled ? (active ? "Continuous mode enabled and running" : "Continuous mode enabled") : "Continuous mode disabled";
-  } else {
-    statusPill.setAttribute("aria-label", active ? "Active" : "Idle");
-    statusPill.title = active ? "Active" : "Idle";
-  }
+  updateContinuousModeUI();
   actionButton.classList.toggle("is-stop", active);
   actionButton.innerHTML = `<i data-lucide="${active ? "circle-stop" : "play"}" aria-hidden="true"></i><span>${active ? "Stop clicking" : "Start clicking"}</span>`;
   refreshIcons();
@@ -231,7 +224,13 @@ function updateContinuousModeUI() {
   const doubleButton = $('[data-setting="clickType"] [data-value="double"]');
   doubleButton.hidden = config.inputMode === "keyboard";
   statusPill.disabled = !continuous;
-  statusPill.setAttribute("aria-checked", String(!continuous || config.continuousEnabled !== false));
+  if (continuous) {
+    statusPill.setAttribute("role", "switch");
+    statusPill.setAttribute("aria-checked", String(config.continuousEnabled !== false));
+  } else {
+    statusPill.setAttribute("role", "status");
+    statusPill.removeAttribute("aria-checked");
+  }
   statusPill.setAttribute("aria-label", continuous ? (config.continuousEnabled !== false ? "Continuous mode enabled" : "Continuous mode disabled") : (active ? "Active" : "Idle"));
   statusPill.title = continuous
     ? (config.continuousEnabled !== false ? (active ? "Continuous mode enabled and running" : "Continuous mode enabled") : "Continuous mode disabled")
@@ -277,14 +276,29 @@ function syncWindowHeight() {
     body.style.minHeight = "0";
     appFrame.style.minHeight = "0";
     viewStack.style.flex = "none";
-    const height = Math.max(MIN_WINDOW_HEIGHT, Math.ceil(appFrame.scrollHeight));
+    const frameRect = appFrame.getBoundingClientRect();
+    const contentBottom = Math.max(...Array.from(appFrame.children)
+      .filter((child) => {
+        if (child.hidden) return false;
+        const style = getComputedStyle(child);
+        return style.display !== "none" && style.position !== "fixed" && style.position !== "absolute";
+      })
+      .map((child) => {
+        const rect = child.getBoundingClientRect();
+        return Math.max(rect.bottom, rect.top + child.scrollHeight);
+      }));
+    const paddingBottom = Number.parseFloat(getComputedStyle(appFrame).paddingBottom) || 0;
+    const contentHeight = contentBottom - frameRect.top + paddingBottom;
+    const landscape = window.matchMedia("(min-width: 700px)").matches;
+    const height = landscape ? Math.ceil(contentHeight) : Math.max(MIN_WINDOW_HEIGHT, Math.ceil(contentHeight));
     root.style.minHeight = previous.rootMinHeight;
     body.style.minHeight = previous.bodyMinHeight;
     appFrame.style.minHeight = previous.frameMinHeight;
     viewStack.style.flex = previous.stackFlex;
-    if (height === lastWindowHeight) return;
+    if (height === lastWindowHeight && landscape === lastWindowLandscape) return;
     lastWindowHeight = height;
-    invoke("set_window_content_height", { height }).catch(() => {});
+    lastWindowLandscape = landscape;
+    invoke("set_window_content_height", { height, landscape }).catch(() => {});
   });
 }
 
@@ -330,8 +344,15 @@ function writeIntervalFields(intervalMs) {
 }
 
 function writeInterval(intervalMs) {
-  config.intervalMs = Math.min(86_400_000, Math.max(0.5, intervalMs));
+  config.intervalMs = Math.min(86_400_000, Math.max(0, intervalMs));
   writeIntervalFields(config.intervalMs);
+}
+
+function hasZeroIntervalDraft() {
+  if (config.rateEntryMode !== "interval") return false;
+  const [hours, minutes, seconds, milliseconds] = ["#hours-input", "#minutes-input", "#seconds-input", "#milliseconds-input"]
+    .map((selector) => Math.max(0, Number($(selector).value) || 0));
+  return hours * 3_600_000 + minutes * 60_000 + seconds * 1000 + milliseconds === 0;
 }
 
 function writeCps(cps) {
@@ -430,7 +451,7 @@ async function loadSettings() {
     config.clickType = "single";
     queueSave();
   }
-  writeInterval(Number(config.intervalMs) || defaults.intervalMs);
+  writeInterval(Number.isFinite(Number(config.intervalMs)) ? Number(config.intervalMs) : defaults.intervalMs);
   writeCps(Number(config.cps) || defaults.cps);
   selectRateEntryMode(config.rateEntryMode);
   document.querySelectorAll('[data-setting="mouseButton"] button').forEach((button) => button.setAttribute("aria-pressed", String(config.mouseButtons.includes(button.dataset.value))));
@@ -456,16 +477,26 @@ $("#cps-input").addEventListener("change", (event) => {
 });
 
 const timeInputs = ["#hours-input", "#minutes-input", "#seconds-input", "#milliseconds-input"].map($);
+function disableContinuousForIntervalEdit() {
+  if (config.clickType !== "continuous" || config.continuousEnabled === false) return;
+  config.continuousEnabled = false;
+  updateContinuousModeUI();
+  invoke("set_continuous_enabled", { enabled: false })
+    .then((state) => setActive(state.active))
+    .catch((error) => notify(String(error), true));
+}
 timeInputs.forEach((input) => input.addEventListener("change", () => {
   const [hours, minutes, seconds, milliseconds] = timeInputs.map((field) => Math.max(0, Number(field.value) || 0));
   const totalMs = Math.min(86_400_000, hours * 3_600_000 + minutes * 60_000 + seconds * 1000 + milliseconds);
-  if (!Number.isFinite(totalMs) || totalMs < 0.5) {
-    notify("Enter an interval greater than zero.", true);
+  if (!Number.isFinite(totalMs) || (totalMs > 0 && totalMs < 0.5)) {
+    notify("Enter 0 or an interval of at least 0.5 milliseconds.", true);
     writeIntervalFields(config.intervalMs);
     return;
   }
+  disableContinuousForIntervalEdit();
   writeInterval(totalMs);
-  queueSave();
+  if (totalMs === 0) void saveSettingsNow();
+  else queueSave();
 }));
 
 $$("[data-rate-entry]").forEach((button) => button.addEventListener("click", () => selectRateEntryMode(button.dataset.rateEntry)));
@@ -518,6 +549,10 @@ $$('[data-setting="mouseButton"] button, [data-setting="clickType"] button, [dat
 statusPill.addEventListener("click", async () => {
   if (config.clickType !== "continuous") return;
   const next = config.continuousEnabled === false;
+  if (next && hasZeroIntervalDraft()) {
+    notify("At least one interval field must be filled", true);
+    return;
+  }
   try { await invoke("set_continuous_enabled", { enabled: next }); config.continuousEnabled = next; updateContinuousModeUI(); }
   catch (error) { notify(String(error), true); }
 });
@@ -555,6 +590,7 @@ $("#transparency-effects").addEventListener("click", async (event) => {
   } catch (error) { notify(String(error), true); }
   finally { toggle.disabled = false; }
 });
+
 
 $$('[data-setting="trayBehavior"] button').forEach((button) => button.addEventListener("click", () => {
   config.trayBehavior = button.dataset.value;
@@ -656,6 +692,10 @@ window.addEventListener("auxclick", (event) => {
 }, true);
 
 actionButton.addEventListener("click", async () => {
+  if (!active && hasZeroIntervalDraft()) {
+    notify("At least one interval field must be filled", true);
+    return;
+  }
   actionButton.disabled = true;
   try {
     const state = await invoke(active ? "stop_clicking" : "start_clicking");

@@ -25,6 +25,7 @@ const VK_MBUTTON_CODE: u32 = 0x04;
 pub enum EngineEvent {
     Toggle(bool),
     ContinuousEnabled(bool),
+    InvalidTimedIntervalStart,
     HotkeyError(String),
     RateSample { clicks: u64, elapsed_ms: u64 },
 }
@@ -104,12 +105,15 @@ fn interval_for_rate(cps_milli: u64, interval_ns: u64, mode: RateEntryMode, opti
             let cps = cps_milli.max(1000) as f64 / 1000.0;
             Duration::from_secs_f64(clicks_per_action(options) as f64 / cps)
         }
-        RateEntryMode::Interval => Duration::from_nanos(interval_ns),
+        RateEntryMode::Interval => Duration::from_nanos(interval_ns.max(500_000)),
     }
 }
 
-fn toggle_if_allowed(running: &AtomicBool, allowed: &AtomicBool, schedule_generation: &AtomicU64) -> Option<bool> {
+fn toggle_if_allowed(running: &AtomicBool, allowed: &AtomicBool, can_start: &AtomicBool, schedule_generation: &AtomicU64) -> Option<bool> {
     if !allowed.load(Ordering::Acquire) {
+        return None;
+    }
+    if !running.load(Ordering::Acquire) && !can_start.load(Ordering::Acquire) {
         return None;
     }
     let next = !running.fetch_xor(true, Ordering::AcqRel);
@@ -197,6 +201,7 @@ enum HotkeyCommand {
 pub struct ClickEngine {
     running: Arc<AtomicBool>,
     clicking_allowed: Arc<AtomicBool>,
+    can_start: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     interval_ns: Arc<AtomicU64>,
     cps_milli: Arc<AtomicU64>,
@@ -225,6 +230,7 @@ impl ClickEngine {
         }
         let running = Arc::new(AtomicBool::new(false));
         let clicking_allowed = Arc::new(AtomicBool::new(true));
+        let can_start = Arc::new(AtomicBool::new(true));
         let shutdown = Arc::new(AtomicBool::new(false));
         let interval_ns = Arc::new(AtomicU64::new(10_000_000));
         let cps_milli = Arc::new(AtomicU64::new((cps * 1000.0) as u64));
@@ -245,6 +251,7 @@ impl ClickEngine {
 
         let click_running = running.clone();
         let click_allowed = clicking_allowed.clone();
+        let click_can_start = can_start.clone();
         let click_shutdown = shutdown.clone();
         let click_rate = interval_ns.clone();
         let click_cps = cps_milli.clone();
@@ -254,6 +261,7 @@ impl ClickEngine {
         let click_continuous_enabled = Arc::new(AtomicBool::new(true));
         let click_human_like = Arc::new(AtomicBool::new(false));
         let click_continuous_enabled_thread = click_continuous_enabled.clone();
+        let click_can_start_thread = click_can_start;
         let click_human_like_thread = click_human_like.clone();
         let excluded_window_thread = excluded_window.clone();
         let click_count = clicks.clone();
@@ -285,7 +293,7 @@ impl ClickEngine {
                     } else if !allowed {
                         continuous_blocked_until_release = true;
                     }
-                    let should_run = is_down && allowed && click_continuous_enabled_thread.load(Ordering::Acquire) && !continuous_blocked_until_release;
+                    let should_run = is_down && allowed && click_can_start_thread.load(Ordering::Acquire) && click_continuous_enabled_thread.load(Ordering::Acquire) && !continuous_blocked_until_release;
                     let was_running = click_running.swap(should_run, Ordering::AcqRel);
                     if was_running != should_run {
                         click_generation.fetch_add(1, Ordering::Release);
@@ -372,6 +380,7 @@ impl ClickEngine {
 
         let hotkey_running = running.clone();
         let hotkey_allowed = clicking_allowed.clone();
+        let hotkey_can_start = can_start.clone();
         let hotkey_events = event_tx.clone();
         let hotkey_generation = schedule_generation.clone();
         let hotkey_options = click_options.clone();
@@ -382,6 +391,7 @@ impl ClickEngine {
                 hotkey,
                 hotkey_running,
                 hotkey_allowed,
+                hotkey_can_start,
                 hotkey_generation,
                 hotkey_options,
                 hotkey_continuous_enabled,
@@ -411,6 +421,7 @@ impl ClickEngine {
         Ok(Self {
             running,
             clicking_allowed,
+            can_start,
             shutdown,
             interval_ns,
             cps_milli,
@@ -431,11 +442,14 @@ impl ClickEngine {
     }
 
     pub fn set_interval_ms(&self, interval_ms: f64) -> Result<(), String> {
-        if !interval_ms.is_finite() || !(0.5..=86_400_000.0).contains(&interval_ms) {
-            return Err("Interval must be between 0.5 milliseconds and 24 hours".into());
+        if !interval_ms.is_finite() || interval_ms < 0.0 || (interval_ms > 0.0 && interval_ms < 0.5) || interval_ms > 86_400_000.0 {
+            return Err("Interval must be 0 or between 0.5 milliseconds and 24 hours".into());
         }
         self.interval_ns.store((interval_ms * 1_000_000.0).round() as u64, Ordering::Release);
+        let can_start = interval_ms >= 0.5 || *self.rate_entry_mode.read().unwrap() != RateEntryMode::Interval;
+        self.can_start.store(can_start, Ordering::Release);
         self.schedule_generation.fetch_add(1, Ordering::Release);
+        if !can_start { self.stop(); }
         Ok(())
     }
 
@@ -449,12 +463,21 @@ impl ClickEngine {
     }
 
     pub fn set_rate_entry_mode(&self, mode: RateEntryMode) {
+        let can_start = mode != RateEntryMode::Interval || self.interval_ns.load(Ordering::Acquire) >= 500_000;
+        self.can_start.store(can_start, Ordering::Release);
         *self.rate_entry_mode.write().unwrap() = mode;
         self.schedule_generation.fetch_add(1, Ordering::Release);
+        if !can_start { self.stop(); }
     }
 
     pub fn set_human_like(&self, enabled: bool) { self.human_like.store(enabled, Ordering::Release); self.schedule_generation.fetch_add(1, Ordering::Release); }
-    pub fn set_continuous_enabled(&self, enabled: bool) { self.continuous_enabled.store(enabled, Ordering::Release); self.schedule_generation.fetch_add(1, Ordering::Release); if !enabled { self.stop(); } }
+    pub fn set_continuous_enabled(&self, enabled: bool) {
+        if enabled && !self.can_start.load(Ordering::Acquire) { return; }
+        self.continuous_enabled.store(enabled, Ordering::Release);
+        self.schedule_generation.fetch_add(1, Ordering::Release);
+        if !enabled { self.stop(); }
+    }
+    pub fn can_start(&self) -> bool { self.can_start.load(Ordering::Acquire) }
 
     pub fn set_click_options(&self, options: ClickOptions) -> Result<(), String> {
         if options.click_type == ClickType::Continuous && !self.continuous_supported {
@@ -493,6 +516,9 @@ impl ClickEngine {
     pub fn start(&self) -> Result<(), String> {
         if !self.clicking_allowed.load(Ordering::Acquire) {
             return Err("Clicking is disabled while Settings is open".into());
+        }
+        if !self.can_start.load(Ordering::Acquire) {
+            return Err("At least one interval field must be filled".into());
         }
         if self.click_options.read().unwrap().click_type == ClickType::Continuous {
             return Err("Hold the selected input to click continuously".into());
@@ -662,6 +688,7 @@ fn hotkey_loop(
     initial: Hotkey,
     running: Arc<AtomicBool>,
     clicking_allowed: Arc<AtomicBool>,
+    can_start: Arc<AtomicBool>,
     schedule_generation: Arc<AtomicU64>,
     click_options: Arc<RwLock<ClickOptions>>,
     continuous_enabled: Arc<AtomicBool>,
@@ -766,13 +793,21 @@ fn hotkey_loop(
                 && registered
             {
                 if click_options.read().unwrap().click_type == ClickType::Continuous && clicking_allowed.load(Ordering::Acquire) {
-                    let next = !continuous_enabled.fetch_xor(true, Ordering::AcqRel);
-                    if running.swap(false, Ordering::AcqRel) {
-                        let _ = events.send(EngineEvent::Toggle(false));
+                    if !can_start.load(Ordering::Acquire) && !continuous_enabled.load(Ordering::Acquire) {
+                        let _ = events.send(EngineEvent::InvalidTimedIntervalStart);
+                    } else {
+                        let next = !continuous_enabled.fetch_xor(true, Ordering::AcqRel);
+                        if running.swap(false, Ordering::AcqRel) {
+                            let _ = events.send(EngineEvent::Toggle(false));
+                        }
+                        let _ = events.send(EngineEvent::ContinuousEnabled(next));
                     }
-                    let _ = events.send(EngineEvent::ContinuousEnabled(next));
-                } else if let Some(next) = toggle_if_allowed(&running, &clicking_allowed, &schedule_generation) {
-                    let _ = events.send(EngineEvent::Toggle(next));
+                } else if clicking_allowed.load(Ordering::Acquire) {
+                    if !running.load(Ordering::Acquire) && !can_start.load(Ordering::Acquire) {
+                        let _ = events.send(EngineEvent::InvalidTimedIntervalStart);
+                    } else if let Some(next) = toggle_if_allowed(&running, &clicking_allowed, &can_start, &schedule_generation) {
+                        let _ = events.send(EngineEvent::Toggle(next));
+                    }
                 }
             }
             let mouse4_is_down = GetAsyncKeyState(VK_XBUTTON1_CODE as i32) < 0;
@@ -786,13 +821,19 @@ fn hotkey_loop(
             mouse5_was_down = mouse5_is_down;
             if selected_mouse_button_pressed {
                 if click_options.read().unwrap().click_type == ClickType::Continuous && clicking_allowed.load(Ordering::Acquire) {
-                    let next = !continuous_enabled.fetch_xor(true, Ordering::AcqRel);
-                    if running.swap(false, Ordering::AcqRel) {
-                        let _ = events.send(EngineEvent::Toggle(false));
+                    if !can_start.load(Ordering::Acquire) && !continuous_enabled.load(Ordering::Acquire) {
+                        let _ = events.send(EngineEvent::InvalidTimedIntervalStart);
+                    } else {
+                        let next = !continuous_enabled.fetch_xor(true, Ordering::AcqRel);
+                        if running.swap(false, Ordering::AcqRel) {
+                            let _ = events.send(EngineEvent::Toggle(false));
+                        }
+                        let _ = events.send(EngineEvent::ContinuousEnabled(next));
                     }
-                    let _ = events.send(EngineEvent::ContinuousEnabled(next));
                 } else {
-                    if let Some(next) = toggle_if_allowed(&running, &clicking_allowed, &schedule_generation) {
+                    if clicking_allowed.load(Ordering::Acquire) && !running.load(Ordering::Acquire) && !can_start.load(Ordering::Acquire) {
+                        let _ = events.send(EngineEvent::InvalidTimedIntervalStart);
+                    } else if let Some(next) = toggle_if_allowed(&running, &clicking_allowed, &can_start, &schedule_generation) {
                         let _ = events.send(EngineEvent::Toggle(next));
                     }
                 }
@@ -812,6 +853,7 @@ fn hotkey_loop(
     _initial: Hotkey,
     _running: Arc<AtomicBool>,
     _clicking_allowed: Arc<AtomicBool>,
+    _can_start: Arc<AtomicBool>,
     _schedule_generation: Arc<AtomicU64>,
     _click_options: Arc<RwLock<ClickOptions>>,
     _continuous_enabled: Arc<AtomicBool>,
@@ -877,9 +919,10 @@ mod tests {
     fn toggle_hotkey_is_ignored_when_clicking_is_disallowed() {
         let running = AtomicBool::new(false);
         let allowed = AtomicBool::new(false);
+        let can_start = AtomicBool::new(true);
 
         let generation = AtomicU64::new(0);
-        assert_eq!(toggle_if_allowed(&running, &allowed, &generation), None);
+        assert_eq!(toggle_if_allowed(&running, &allowed, &can_start, &generation), None);
         assert!(!running.load(Ordering::Acquire));
     }
 
@@ -887,11 +930,12 @@ mod tests {
     fn toggle_hotkey_still_works_when_clicking_is_allowed() {
         let running = AtomicBool::new(false);
         let allowed = AtomicBool::new(true);
+        let can_start = AtomicBool::new(true);
 
         let generation = AtomicU64::new(0);
-        assert_eq!(toggle_if_allowed(&running, &allowed, &generation), Some(true));
+        assert_eq!(toggle_if_allowed(&running, &allowed, &can_start, &generation), Some(true));
         assert!(running.load(Ordering::Acquire));
-        assert_eq!(toggle_if_allowed(&running, &allowed, &generation), Some(false));
+        assert_eq!(toggle_if_allowed(&running, &allowed, &can_start, &generation), Some(false));
         assert!(!running.load(Ordering::Acquire));
     }
 

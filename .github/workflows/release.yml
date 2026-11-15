@@ -40,7 +40,16 @@ jobs:
           tagName: app-v__VERSION__
           releaseName: vibeclicker v__VERSION__
           releaseAssetNamePattern: '[name][setup][ext]'
-          releaseBody: Download the NSIS installer below. Users still on 0.1.0 must manually install 0.2.0 once before in-app updates work.
+          releaseBody: |
+            ## What's Changed
+
+            * Release 0.3.1 by @zualo in https://github.com/zualo/vibeclicker/pull/3
+
+            - Compact settings and spacing
+            - Content-based portrait sizing
+            - Shorter landscape hotkey card
+
+            **Full Changelog**: https://github.com/zualo/vibeclicker/compare/app-v0.3.0...app-v0.3.1
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: true
