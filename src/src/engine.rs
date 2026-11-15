@@ -69,18 +69,33 @@ fn physical_inputs() -> &'static Mutex<HashMap<u32, Instant>> {
 }
 
 #[cfg(windows)]
-fn continuous_input_is_held(options: ClickOptions) -> bool {
+fn continuous_mouse_buttons_held(options: ClickOptions) -> Vec<MouseButton> {
     const HOLD_THRESHOLD: Duration = Duration::from_millis(80);
     physical_inputs().lock().map(|inputs| {
-        if options.mode == InputMode::Keyboard {
-            return inputs.get(&options.keyboard_key).is_some_and(|pressed_at| pressed_at.elapsed() >= HOLD_THRESHOLD);
-        }
-        selected_mouse_buttons(options).into_iter().any(|button| {
+        selected_mouse_buttons(options).into_iter().filter(|button| {
             let key = match button { MouseButton::Left => VK_LBUTTON_CODE, MouseButton::Right => VK_RBUTTON_CODE, MouseButton::Middle => VK_MBUTTON_CODE };
             inputs.get(&key).is_some_and(|pressed_at| pressed_at.elapsed() >= HOLD_THRESHOLD)
-        })
-    })
-        .unwrap_or(false)
+        }).collect()
+    }).unwrap_or_default()
+}
+
+#[cfg(windows)]
+fn continuous_input_is_held(options: ClickOptions) -> bool {
+    const HOLD_THRESHOLD: Duration = Duration::from_millis(80);
+    if options.mode == InputMode::Keyboard {
+        return physical_inputs().lock().map(|inputs| {
+            inputs.get(&options.keyboard_key).is_some_and(|pressed_at| pressed_at.elapsed() >= HOLD_THRESHOLD)
+        }).unwrap_or(false);
+    }
+    !continuous_mouse_buttons_held(options).is_empty()
+}
+
+fn buttons_to_click(options: ClickOptions) -> Vec<MouseButton> {
+    if options.click_type == ClickType::Continuous {
+        #[cfg(windows)]
+        { return continuous_mouse_buttons_held(options); }
+    }
+    selected_mouse_buttons(options)
 }
 
 fn interval_for_rate(cps_milli: u64, interval_ns: u64, mode: RateEntryMode, options: ClickOptions) -> Duration {
@@ -326,7 +341,7 @@ impl ClickEngine {
                 };
                 if safe_target {
                     let buttons = if options.mode == InputMode::Mouse {
-                        selected_mouse_buttons(options.clone())
+                        buttons_to_click(options.clone())
                     } else {
                         vec![options.mouse_button]
                     };

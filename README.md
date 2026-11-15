@@ -1,9 +1,11 @@
 # vibeclicker
 
-A compact Windows autoclicker built with a Rust click engine and a Tauri v2 frontend. The interface uses Tailwind CSS, Lucide icons, and a locally bundled Geist variable font. It follows the system light/dark preference by default and lets users choose an override.
+vibeclicker is the autoclicker built for me and my friends based on what we've been wanting in an autoclicker. After the downfall of The Fastestest Mouse Clicker for Windows due to reported malware, I had been using a simple Python autoclicker ran from terminal. Well, eventually I got tired of having to run it that way and decided to make a big boy autoclicker. 
+
+vibeclicker runs a Rust backend w/ Tauri v2 to build the UI using Tailwind CSS. Definitely not the most RAM efficient autoclicker out there, but I haven't ran a RAM constricted system for gaming in quite some years, so.
 
 <p align="center">
-  <img src="screenshots/vibeclicker-preview.png" alt="VibeClicker main screen" />
+  <img src="screenshots/vibeclicker-preview.png" alt="vibeclicker main screen" />
 </p>
 
 ## Develop
@@ -24,5 +26,3 @@ npm run tauri build
 ```
 
 Installers are written under `src/target/release/bundle`. Tauri's Windows installer bundler needs WiX; if network access is unavailable to download it, `npm run tauri build -- --no-bundle` builds the app executable without an installer. Windows is the only supported and verified platform; click injection and global hotkeys use Win32 APIs.
-
-Settings are saved automatically to the local application data directory. The UI includes CPS and interval controls, mouse button and click type selection, keyboard and Mouse 4/5 toggle hotkeys, theme preference, and an always-on-top option.
