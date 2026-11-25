@@ -5,9 +5,6 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
     Arc, Mutex, RwLock,
 };
-#[cfg(windows)]
-use std::collections::HashMap;
-#[cfg(windows)]
 use std::sync::OnceLock;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -50,56 +47,298 @@ pub fn measured_cps(clicks: u64, elapsed_ms: u64) -> f64 {
     }
 }
 
-fn clicks_per_action(options: ClickOptions) -> u64 {
+fn clicks_per_action(options: &ClickOptions) -> u64 {
     match (options.mode, options.click_type) {
         (InputMode::Mouse, ClickType::Double) => 2,
         _ => 1,
     }
 }
 
-fn selected_mouse_buttons(options: ClickOptions) -> Vec<MouseButton> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldMouseButtons {
+    buttons: [MouseButton; 3],
+    count: usize,
+}
+
+impl HeldMouseButtons {
+    pub const fn empty() -> Self {
+        Self {
+            buttons: [MouseButton::Left, MouseButton::Left, MouseButton::Left],
+            count: 0,
+        }
+    }
+
+    pub fn push(&mut self, btn: MouseButton) {
+        if self.count < self.buttons.len() {
+            self.buttons[self.count] = btn;
+            self.count += 1;
+        }
+    }
+
+    pub fn as_slice(&self) -> &[MouseButton] {
+        &self.buttons[..self.count]
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.count
+    }
+}
+
+fn selected_mouse_buttons(options: &ClickOptions) -> HeldMouseButtons {
+    let mut held = HeldMouseButtons::empty();
     if options.click_type == ClickType::Continuous && !options.mouse_buttons.is_empty() {
-        options.mouse_buttons
-    } else { vec![options.mouse_button] }
+        for &btn in &options.mouse_buttons {
+            held.push(btn);
+        }
+    } else {
+        held.push(options.mouse_button);
+    }
+    held
+}
+
+pub struct PhysicalInputs {
+    epoch: OnceLock<Instant>,
+    pressed_at_ns: [AtomicU64; 256],
+}
+
+impl PhysicalInputs {
+    pub fn new() -> Self {
+        Self {
+            epoch: OnceLock::new(),
+            pressed_at_ns: std::array::from_fn(|_| AtomicU64::new(0)),
+        }
+    }
+
+    fn now_ns(&self) -> u64 {
+        let epoch = *self.epoch.get_or_init(Instant::now);
+        Instant::now().duration_since(epoch).as_nanos() as u64
+    }
+
+    pub fn now_ns_plus_1(&self) -> u64 {
+        self.now_ns().saturating_add(1)
+    }
+
+    pub fn set_down(&self, vk: u32) {
+        if (vk as usize) < 256 {
+            let now_ns_plus_1 = self.now_ns_plus_1();
+            let _ = self.pressed_at_ns[vk as usize].compare_exchange(
+                0,
+                now_ns_plus_1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+    }
+
+    pub fn set_up(&self, vk: u32) {
+        if (vk as usize) < 256 {
+            self.pressed_at_ns[vk as usize].store(0, Ordering::Release);
+        }
+    }
+
+    pub fn is_held_at(&self, vk: u32, now_ns_plus_1: u64, threshold_ns: u64) -> bool {
+        if (vk as usize) >= 256 {
+            return false;
+        }
+        let pressed = self.pressed_at_ns[vk as usize].load(Ordering::Acquire);
+        if pressed == 0 {
+            return false;
+        }
+        now_ns_plus_1.saturating_sub(pressed) >= threshold_ns
+    }
+
+    pub fn is_held(&self, vk: u32, threshold_ns: u64) -> bool {
+        self.is_held_at(vk, self.now_ns_plus_1(), threshold_ns)
+    }
+
+    #[cfg(test)]
+    pub fn is_down(&self, vk: u32) -> bool {
+        if (vk as usize) >= 256 {
+            return false;
+        }
+        self.pressed_at_ns[vk as usize].load(Ordering::Acquire) != 0
+    }
+
+    pub fn clear(&self) {
+        for slot in &self.pressed_at_ns {
+            slot.store(0, Ordering::Release);
+        }
+    }
 }
 
 #[cfg(windows)]
-fn physical_inputs() -> &'static Mutex<HashMap<u32, Instant>> {
-    static INPUTS: OnceLock<Mutex<HashMap<u32, Instant>>> = OnceLock::new();
-    INPUTS.get_or_init(|| Mutex::new(HashMap::new()))
+fn physical_inputs() -> &'static PhysicalInputs {
+    static INPUTS: OnceLock<PhysicalInputs> = OnceLock::new();
+    INPUTS.get_or_init(PhysicalInputs::new)
 }
 
 #[cfg(windows)]
-fn continuous_mouse_buttons_held(options: ClickOptions) -> Vec<MouseButton> {
-    const HOLD_THRESHOLD: Duration = Duration::from_millis(80);
-    physical_inputs().lock().map(|inputs| {
-        selected_mouse_buttons(options).into_iter().filter(|button| {
-            let key = match button { MouseButton::Left => VK_LBUTTON_CODE, MouseButton::Right => VK_RBUTTON_CODE, MouseButton::Middle => VK_MBUTTON_CODE };
-            inputs.get(&key).is_some_and(|pressed_at| pressed_at.elapsed() >= HOLD_THRESHOLD)
-        }).collect()
-    }).unwrap_or_default()
+fn continuous_mouse_buttons_held(options: &ClickOptions) -> HeldMouseButtons {
+    const HOLD_THRESHOLD_NS: u64 = 80_000_000;
+    let mut held = HeldMouseButtons::empty();
+    let inputs = physical_inputs();
+    let selected = selected_mouse_buttons(options);
+    let now_ns_plus_1 = inputs.now_ns_plus_1();
+    for &button in selected.as_slice() {
+        let key = match button {
+            MouseButton::Left => VK_LBUTTON_CODE,
+            MouseButton::Right => VK_RBUTTON_CODE,
+            MouseButton::Middle => VK_MBUTTON_CODE,
+        };
+        if inputs.is_held_at(key, now_ns_plus_1, HOLD_THRESHOLD_NS) {
+            held.push(button);
+        }
+    }
+    held
 }
 
 #[cfg(windows)]
-fn continuous_input_is_held(options: ClickOptions) -> bool {
-    const HOLD_THRESHOLD: Duration = Duration::from_millis(80);
+fn continuous_input_is_held(options: &ClickOptions) -> bool {
+    const HOLD_THRESHOLD_NS: u64 = 80_000_000;
     if options.mode == InputMode::Keyboard {
-        return physical_inputs().lock().map(|inputs| {
-            inputs.get(&options.keyboard_key).is_some_and(|pressed_at| pressed_at.elapsed() >= HOLD_THRESHOLD)
-        }).unwrap_or(false);
+        return physical_inputs().is_held(options.keyboard_key, HOLD_THRESHOLD_NS);
     }
     !continuous_mouse_buttons_held(options).is_empty()
 }
 
-fn buttons_to_click(options: ClickOptions) -> Vec<MouseButton> {
+#[cfg(not(windows))]
+fn continuous_mouse_buttons_held(_options: &ClickOptions) -> HeldMouseButtons {
+    HeldMouseButtons::empty()
+}
+
+#[cfg(not(windows))]
+fn continuous_input_is_held(_options: &ClickOptions) -> bool {
+    false
+}
+
+fn buttons_to_click(options: &ClickOptions) -> HeldMouseButtons {
     if options.click_type == ClickType::Continuous {
         #[cfg(windows)]
-        { return continuous_mouse_buttons_held(options); }
+        {
+            return continuous_mouse_buttons_held(options);
+        }
     }
     selected_mouse_buttons(options)
 }
 
-fn interval_for_rate(cps_milli: u64, interval_ns: u64, mode: RateEntryMode, options: ClickOptions) -> Duration {
+#[cfg(windows)]
+unsafe extern "system" fn mouse_hook_proc(
+    n_code: i32,
+    w_param: windows::Win32::Foundation::WPARAM,
+    l_param: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, MSLLHOOKSTRUCT, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+        WM_MBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    };
+
+    if n_code < 0 {
+        return CallNextHookEx(None, n_code, w_param, l_param);
+    }
+
+    let msg = w_param.0 as u32;
+    match msg {
+        WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MBUTTONDOWN
+        | WM_MBUTTONUP => {}
+        _ => return CallNextHookEx(None, n_code, w_param, l_param),
+    }
+
+    let info = l_param.0 as *const MSLLHOOKSTRUCT;
+    if info.is_null() {
+        return CallNextHookEx(None, n_code, w_param, l_param);
+    }
+
+    // LLMHF_INJECTED (0x00000001) | LLMHF_LOWER_IL_INJECTED (0x00000002)
+    const INJECTED_FLAGS: u32 = 0x0000_0001 | 0x0000_0002;
+    if (*info).flags & INJECTED_FLAGS != 0 {
+        return CallNextHookEx(None, n_code, w_param, l_param);
+    }
+
+    let inputs = physical_inputs();
+    match msg {
+        WM_LBUTTONDOWN => inputs.set_down(VK_LBUTTON_CODE),
+        WM_LBUTTONUP => inputs.set_up(VK_LBUTTON_CODE),
+        WM_RBUTTONDOWN => inputs.set_down(VK_RBUTTON_CODE),
+        WM_RBUTTONUP => inputs.set_up(VK_RBUTTON_CODE),
+        WM_MBUTTONDOWN => inputs.set_down(VK_MBUTTON_CODE),
+        WM_MBUTTONUP => inputs.set_up(VK_MBUTTON_CODE),
+        _ => {}
+    }
+
+    CallNextHookEx(None, n_code, w_param, l_param)
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn keyboard_hook_proc(
+    n_code: i32,
+    w_param: windows::Win32::Foundation::WPARAM,
+    l_param: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    };
+
+    if n_code < 0 {
+        return CallNextHookEx(None, n_code, w_param, l_param);
+    }
+
+    let msg = w_param.0 as u32;
+    match msg {
+        WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP => {}
+        _ => return CallNextHookEx(None, n_code, w_param, l_param),
+    }
+
+    let info = l_param.0 as *const KBDLLHOOKSTRUCT;
+    if info.is_null() {
+        return CallNextHookEx(None, n_code, w_param, l_param);
+    }
+
+    // LLKHF_INJECTED (0x00000010) | LLKHF_LOWER_IL_INJECTED (0x00000002)
+    const INJECTED_FLAGS: u32 = 0x0000_0010 | 0x0000_0002;
+    let flags = (*info).flags.0;
+    if flags & INJECTED_FLAGS != 0 {
+        return CallNextHookEx(None, n_code, w_param, l_param);
+    }
+
+    let vk = (*info).vkCode;
+    let inputs = physical_inputs();
+    match msg {
+        WM_KEYDOWN | WM_SYSKEYDOWN => inputs.set_down(vk),
+        WM_KEYUP | WM_SYSKEYUP => inputs.set_up(vk),
+        _ => {}
+    }
+
+    CallNextHookEx(None, n_code, w_param, l_param)
+}
+
+#[cfg(windows)]
+struct HighResTimerGuard;
+
+#[cfg(windows)]
+impl HighResTimerGuard {
+    fn new() -> Self {
+        unsafe {
+            let _ = windows::Win32::Media::timeBeginPeriod(1);
+        }
+        Self
+    }
+}
+
+#[cfg(windows)]
+impl Drop for HighResTimerGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows::Win32::Media::timeEndPeriod(1);
+        }
+    }
+}
+
+fn interval_for_rate(cps_milli: u64, interval_ns: u64, mode: RateEntryMode, options: &ClickOptions) -> Duration {
     match mode {
         RateEntryMode::Cps => {
             let cps = cps_milli.max(1000) as f64 / 1000.0;
@@ -130,71 +369,9 @@ fn is_mouse_button_hotkey(key_code: u32) -> bool {
     matches!(key_code, VK_XBUTTON1_CODE | VK_XBUTTON2_CODE)
 }
 
-#[cfg(windows)]
-unsafe extern "system" fn continuous_keyboard_hook(
-    code: i32,
-    wparam: windows::Win32::Foundation::WPARAM,
-    lparam: windows::Win32::Foundation::LPARAM,
-) -> windows::Win32::Foundation::LRESULT {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, KBDLLHOOKSTRUCT, HC_ACTION, LLKHF_INJECTED, WM_KEYDOWN, WM_KEYUP,
-        WM_SYSKEYDOWN, WM_SYSKEYUP,
-    };
-    if code == HC_ACTION as i32
-        && matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP)
-    {
-        let input = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
-        if !input.flags.contains(LLKHF_INJECTED) {
-            if let Ok(mut inputs) = physical_inputs().lock() {
-                if matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN) {
-                    inputs.entry(input.vkCode).or_insert_with(Instant::now);
-                } else {
-                    inputs.remove(&input.vkCode);
-                }
-            }
-        }
-    }
-    CallNextHookEx(None, code, wparam, lparam)
-}
-
-#[cfg(windows)]
-unsafe extern "system" fn continuous_mouse_hook(
-    code: i32,
-    wparam: windows::Win32::Foundation::WPARAM,
-    lparam: windows::Win32::Foundation::LPARAM,
-) -> windows::Win32::Foundation::LRESULT {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, MSLLHOOKSTRUCT, HC_ACTION, LLMHF_INJECTED, WM_LBUTTONDOWN,
-        WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    };
-    if code == HC_ACTION as i32
-        && matches!(
-            wparam.0 as u32,
-            WM_LBUTTONDOWN | WM_LBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP
-        )
-    {
-        let input = &*(lparam.0 as *const MSLLHOOKSTRUCT);
-        if input.flags & LLMHF_INJECTED == 0 {
-            let key = match wparam.0 as u32 {
-                WM_LBUTTONDOWN | WM_LBUTTONUP => Some(VK_LBUTTON_CODE),
-                WM_RBUTTONDOWN | WM_RBUTTONUP => Some(VK_RBUTTON_CODE),
-                WM_MBUTTONDOWN | WM_MBUTTONUP => Some(VK_MBUTTON_CODE),
-                _ => None,
-            };
-            if let (Some(key), Ok(mut inputs)) = (key, physical_inputs().lock()) {
-                if matches!(wparam.0 as u32, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN) {
-                    inputs.entry(key).or_insert_with(Instant::now);
-                } else {
-                    inputs.remove(&key);
-                }
-            }
-        }
-    }
-    CallNextHookEx(None, code, wparam, lparam)
-}
-
 enum HotkeyCommand {
     Set(Hotkey, Sender<Result<(), String>>),
+    SetContinuousHook(Option<InputMode>, Sender<Result<(), String>>),
     Stop,
 }
 
@@ -269,6 +446,7 @@ impl ClickEngine {
         let click_input_events = event_tx.clone();
         let click_thread = thread::spawn(move || {
             let mut next = Instant::now();
+            let mut options = click_options_thread.read().unwrap().clone();
             let mut random_state = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|duration| duration.as_nanos() as u64)
@@ -279,12 +457,14 @@ impl ClickEngine {
             let mut window_clicks = 0u64;
             let mut continuous_blocked_until_release = false;
             let mut was_continuous = false;
+            #[cfg(windows)]
+            let mut high_res_timer: Option<HighResTimerGuard> = None;
+
             while !click_shutdown.load(Ordering::Acquire) {
-                let options = click_options_thread.read().unwrap().clone();
                 if options.click_type == ClickType::Continuous {
                     was_continuous = true;
                     #[cfg(windows)]
-                    let is_down = continuous_input_is_held(options.clone());
+                    let is_down = continuous_input_is_held(&options);
                     #[cfg(not(windows))]
                     let is_down = false;
                     let allowed = click_allowed.load(Ordering::Acquire);
@@ -293,11 +473,17 @@ impl ClickEngine {
                     } else if !allowed {
                         continuous_blocked_until_release = true;
                     }
-                    let should_run = is_down && allowed && click_can_start_thread.load(Ordering::Acquire) && click_continuous_enabled_thread.load(Ordering::Acquire) && !continuous_blocked_until_release;
-                    let was_running = click_running.swap(should_run, Ordering::AcqRel);
-                    if was_running != should_run {
-                        click_generation.fetch_add(1, Ordering::Release);
-                        let _ = click_input_events.send(EngineEvent::Toggle(should_run));
+                    let should_run = is_down
+                        && allowed
+                        && click_can_start_thread.load(Ordering::Acquire)
+                        && click_continuous_enabled_thread.load(Ordering::Acquire)
+                        && !continuous_blocked_until_release;
+                    if click_running.load(Ordering::Acquire) != should_run {
+                        let was_running = click_running.swap(should_run, Ordering::AcqRel);
+                        if was_running != should_run {
+                            click_generation.fetch_add(1, Ordering::Release);
+                            let _ = click_input_events.send(EngineEvent::Toggle(should_run));
+                        }
                     }
                 } else if was_continuous {
                     was_continuous = false;
@@ -310,62 +496,77 @@ impl ClickEngine {
                 let generation = click_generation.load(Ordering::Acquire);
                 if generation != observed_generation {
                     observed_generation = generation;
+                    options = click_options_thread.read().unwrap().clone();
                     next = Instant::now();
                 }
-                if !click_running.load(Ordering::Acquire) || !click_allowed.load(Ordering::Acquire)
+
+                let is_active = click_running.load(Ordering::Acquire) && click_allowed.load(Ordering::Acquire);
+                #[cfg(windows)]
                 {
+                    if is_active && high_res_timer.is_none() {
+                        high_res_timer = Some(HighResTimerGuard::new());
+                    } else if !is_active && high_res_timer.is_some() {
+                        high_res_timer = None;
+                    }
+                }
+
+                if !is_active {
                     thread::sleep(Duration::from_millis(10));
                     next = Instant::now();
                     window_start = next;
                     window_clicks = 0;
                     continue;
                 }
+
                 let interval_rate = click_rate.load(Ordering::Relaxed);
                 let now = Instant::now();
                 if now < next {
                     let remaining = next - now;
-                    if remaining > Duration::from_micros(700) {
-                        thread::sleep((remaining - Duration::from_micros(500)).min(Duration::from_millis(50)));
+                    const SPIN_MARGIN: Duration = Duration::from_micros(2_000);
+                    if remaining > SPIN_MARGIN {
+                        thread::sleep((remaining - SPIN_MARGIN).min(Duration::from_millis(50)));
                     } else {
                         std::hint::spin_loop();
                     }
                     continue;
                 }
+
                 let rate_mode = *click_mode.read().unwrap();
-                let mut interval = interval_for_rate(click_cps.load(Ordering::Relaxed), interval_rate, rate_mode, options.clone());
+                let mut interval = interval_for_rate(click_cps.load(Ordering::Relaxed), interval_rate, rate_mode, &options);
                 if rate_mode == RateEntryMode::Cps && click_human_like_thread.load(Ordering::Relaxed) {
-                    // Xorshift gives a cheap per-click sample in [0, 1). Mapping
-                    // it to [-0.1, 0.1] keeps CPS within ±10% of the setting.
                     random_state ^= random_state << 13;
                     random_state ^= random_state >> 7;
                     random_state ^= random_state << 17;
                     let sample = (random_state as f64 / u64::MAX as f64) * 0.2 - 0.1;
                     interval = interval.div_f64(1.0 + sample);
                 }
+
                 let excluded = excluded_window_thread.load(Ordering::Relaxed);
                 let safe_target = match options.mode {
                     InputMode::Mouse => !cursor_over_excluded_window(excluded),
                     InputMode::Keyboard => !excluded_window_is_foreground(excluded),
                 };
+
                 if safe_target {
-                    let buttons = if options.mode == InputMode::Mouse {
-                        buttons_to_click(options.clone())
-                    } else {
-                        vec![options.mouse_button]
-                    };
-                    let mut accepted_clicks = 0;
-                    for button in buttons {
-                        let mut button_options = options.clone();
-                        button_options.mouse_button = button;
-                        let action_count = clicks_per_action(button_options.clone());
-                        if send_input(button_options) { accepted_clicks += action_count; }
+                    let mut accepted_clicks = 0u64;
+                    if options.mode == InputMode::Mouse && options.click_type == ClickType::Continuous {
+                        let buttons = buttons_to_click(&options);
+                        let accepted_buttons = send_batched_mouse_clicks(buttons.as_slice());
+                        accepted_clicks = accepted_buttons as u64;
+                    } else if send_input(&options) {
+                        accepted_clicks = clicks_per_action(&options);
                     }
-                    if accepted_clicks > 0 { click_count.fetch_add(accepted_clicks, Ordering::Relaxed); window_clicks += accepted_clicks; }
+                    if accepted_clicks > 0 {
+                        click_count.fetch_add(accepted_clicks, Ordering::Relaxed);
+                        window_clicks += accepted_clicks;
+                    }
                 }
+
                 next += interval;
                 if next <= now {
                     next = now + interval;
                 }
+
                 if now.duration_since(window_start) >= Duration::from_secs(1) {
                     let elapsed = now.duration_since(window_start).as_millis() as u64;
                     let _ = click_events.send(EngineEvent::RateSample {
@@ -470,23 +671,46 @@ impl ClickEngine {
         if !can_start { self.stop(); }
     }
 
-    pub fn set_human_like(&self, enabled: bool) { self.human_like.store(enabled, Ordering::Release); self.schedule_generation.fetch_add(1, Ordering::Release); }
+    pub fn set_human_like(&self, enabled: bool) {
+        self.human_like.store(enabled, Ordering::Release);
+        self.schedule_generation.fetch_add(1, Ordering::Release);
+    }
+
     pub fn set_continuous_enabled(&self, enabled: bool) {
-        if enabled && !self.can_start.load(Ordering::Acquire) { return; }
+        if enabled && !self.can_start.load(Ordering::Acquire) {
+            return;
+        }
         self.continuous_enabled.store(enabled, Ordering::Release);
         self.schedule_generation.fetch_add(1, Ordering::Release);
-        if !enabled { self.stop(); }
+        if !enabled {
+            self.stop();
+        }
     }
-    pub fn can_start(&self) -> bool { self.can_start.load(Ordering::Acquire) }
+
+    pub fn can_start(&self) -> bool {
+        self.can_start.load(Ordering::Acquire)
+    }
 
     pub fn set_click_options(&self, options: ClickOptions) -> Result<(), String> {
         if options.click_type == ClickType::Continuous && !self.continuous_supported {
             return Err("Continuous mode is unavailable because Windows could not monitor held inputs".into());
         }
+        let hook_mode = if options.click_type == ClickType::Continuous {
+            Some(options.mode)
+        } else {
+            None
+        };
+        let (tx, rx) = mpsc::channel();
+        self.hotkey_tx
+            .send(HotkeyCommand::SetContinuousHook(hook_mode, tx))
+            .map_err(|_| "Hotkey service stopped".to_string())?;
+        rx.recv_timeout(Duration::from_secs(2))
+            .map_err(|_| "Timed out configuring continuous input monitoring".to_string())??;
         *self.click_options.write().unwrap() = options;
         self.schedule_generation.fetch_add(1, Ordering::Release);
         Ok(())
     }
+
     pub fn continuous_supported(&self) -> bool {
         self.continuous_supported
     }
@@ -513,6 +737,7 @@ impl ClickEngine {
         self.schedule_generation.fetch_add(1, Ordering::Release);
         let _ = self.event_tx.send(EngineEvent::Toggle(next));
     }
+
     pub fn start(&self) -> Result<(), String> {
         if !self.clicking_allowed.load(Ordering::Acquire) {
             return Err("Clicking is disabled while Settings is open".into());
@@ -529,24 +754,29 @@ impl ClickEngine {
         }
         Ok(())
     }
+
     pub fn set_clicking_allowed(&self, allowed: bool) {
         self.clicking_allowed.store(allowed, Ordering::Release);
         if !allowed {
             self.stop();
         }
     }
+
     pub fn stop(&self) {
         if self.running.swap(false, Ordering::AcqRel) {
             self.schedule_generation.fetch_add(1, Ordering::Release);
             let _ = self.event_tx.send(EngineEvent::Toggle(false));
         }
     }
+
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::Acquire)
     }
+
     pub fn click_count(&self) -> u64 {
         self.clicks.load(Ordering::Relaxed)
     }
+
     pub fn event_receiver(&self) -> Receiver<EngineEvent> {
         self.events
             .lock()
@@ -608,7 +838,7 @@ fn excluded_window_is_foreground(_: isize) -> bool {
 }
 
 #[cfg(windows)]
-fn send_input(options: ClickOptions) -> bool {
+fn send_input(options: &ClickOptions) -> bool {
     match options.mode {
         InputMode::Mouse => send_mouse_click(options.mouse_button, options.click_type),
         InputMode::Keyboard => send_key_press(options.keyboard_key),
@@ -651,9 +881,48 @@ fn send_mouse_click(button: MouseButton, click_type: ClickType) -> bool {
     } else {
         2
     };
-    // Win32's count is the number of INPUT records accepted by the system;
-    // requiring both records means the down/up pair was accepted.
     unsafe { SendInput(&inputs[..len], std::mem::size_of::<INPUT>() as i32) == len as u32 }
+}
+
+#[cfg(windows)]
+fn send_batched_mouse_clicks(buttons: &[MouseButton]) -> usize {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+        MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+        MOUSEINPUT,
+    };
+    if buttons.is_empty() {
+        return 0;
+    }
+    let make_input = |flags| INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx: 0,
+                dy: 0,
+                mouseData: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let mut inputs = [make_input(MOUSEEVENTF_LEFTDOWN); 6];
+    let mut count = 0;
+    for &btn in buttons.iter().take(3) {
+        let (down, up) = match btn {
+            MouseButton::Left => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+            MouseButton::Right => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+            MouseButton::Middle => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+        };
+        inputs[count] = make_input(down);
+        inputs[count + 1] = make_input(up);
+        count += 2;
+    }
+    let accepted = unsafe {
+        SendInput(&inputs[..count], std::mem::size_of::<INPUT>() as i32)
+    };
+    (accepted / 2) as usize
 }
 
 #[cfg(windows)]
@@ -678,8 +947,13 @@ fn send_key_press(key_code: u32) -> bool {
 }
 
 #[cfg(not(windows))]
-fn send_input(_: ClickOptions) -> bool {
+fn send_input(_: &ClickOptions) -> bool {
     false
+}
+
+#[cfg(not(windows))]
+fn send_batched_mouse_clicks(_: &[MouseButton]) -> usize {
+    0
 }
 
 #[cfg(windows)]
@@ -699,9 +973,11 @@ fn hotkey_loop(
         GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, PeekMessageW, SetWindowsHookExW, UnhookWindowsHookEx, MSG,
-        PM_REMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_HOTKEY,
+        DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW,
+        SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, MSG, PM_REMOVE, QS_ALLINPUT,
+        WH_KEYBOARD_LL, WH_MOUSE_LL, WM_HOTKEY,
     };
+
     let id: i32 = 0x51A7;
     let mut current = initial;
     let mut registered = !is_mouse_button_hotkey(current.key_code);
@@ -720,31 +996,140 @@ fn hotkey_loop(
             let _ = events.send(EngineEvent::HotkeyError(message));
             return;
         }
-        let mut keyboard_hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(continuous_keyboard_hook), None, 0).ok();
-        let mut mouse_hook = if keyboard_hook.is_some() {
-            SetWindowsHookExW(WH_MOUSE_LL, Some(continuous_mouse_hook), None, 0).ok()
-        } else {
-            None
+
+        // Verify that low-level hooks are supported and start with no hooks installed
+        let hook_test = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), None, 0);
+        let continuous_supported = match hook_test {
+            Ok(hook) => {
+                let _ = UnhookWindowsHookEx(hook);
+                true
+            }
+            Err(_) => false,
         };
-        let continuous_supported = keyboard_hook.is_some() && mouse_hook.is_some();
-        if !continuous_supported {
-            if let Some(hook) = keyboard_hook.take() { let _ = UnhookWindowsHookEx(hook); }
-            if let Some(hook) = mouse_hook.take() { let _ = UnhookWindowsHookEx(hook); }
-        }
         let _ = ready.send(Ok(continuous_supported));
-        let mut msg = MSG::default();
-        let mut mouse4_was_down = GetAsyncKeyState(VK_XBUTTON1_CODE as i32) < 0;
-        let mut mouse5_was_down = GetAsyncKeyState(VK_XBUTTON2_CODE as i32) < 0;
+
+        let mut mouse_hook: Option<HHOOK> = None;
+        let mut keyboard_hook: Option<HHOOK> = None;
+        let mut mouse4_was_down = is_mouse_button_hotkey(current.key_code)
+            && GetAsyncKeyState(VK_XBUTTON1_CODE as i32) < 0;
+        let mut mouse5_was_down = is_mouse_button_hotkey(current.key_code)
+            && GetAsyncKeyState(VK_XBUTTON2_CODE as i32) < 0;
+
+        let handle_hotkey_trigger = |running: &Arc<AtomicBool>,
+                                     clicking_allowed: &Arc<AtomicBool>,
+                                     can_start: &Arc<AtomicBool>,
+                                     schedule_generation: &Arc<AtomicU64>,
+                                     click_options: &Arc<RwLock<ClickOptions>>,
+                                     continuous_enabled: &Arc<AtomicBool>,
+                                     events: &Sender<EngineEvent>| {
+            if click_options.read().unwrap().click_type == ClickType::Continuous
+                && clicking_allowed.load(Ordering::Acquire)
+            {
+                if !can_start.load(Ordering::Acquire) && !continuous_enabled.load(Ordering::Acquire)
+                {
+                    let _ = events.send(EngineEvent::InvalidTimedIntervalStart);
+                } else {
+                    let next = !continuous_enabled.fetch_xor(true, Ordering::AcqRel);
+                    if running.swap(false, Ordering::AcqRel) {
+                        let _ = events.send(EngineEvent::Toggle(false));
+                    }
+                    let _ = events.send(EngineEvent::ContinuousEnabled(next));
+                }
+            } else if clicking_allowed.load(Ordering::Acquire) {
+                if !running.load(Ordering::Acquire) && !can_start.load(Ordering::Acquire) {
+                    let _ = events.send(EngineEvent::InvalidTimedIntervalStart);
+                } else if let Some(next) =
+                    toggle_if_allowed(running, clicking_allowed, can_start, schedule_generation)
+                {
+                    let _ = events.send(EngineEvent::Toggle(next));
+                }
+            }
+        };
+
         loop {
             while let Ok(command) = rx.try_recv() {
                 match command {
                     HotkeyCommand::Stop => {
-                        if let Some(hook) = keyboard_hook { let _ = UnhookWindowsHookEx(hook); }
-                        if let Some(hook) = mouse_hook { let _ = UnhookWindowsHookEx(hook); }
+                        if let Some(hook) = mouse_hook.take() {
+                            let _ = UnhookWindowsHookEx(hook);
+                        }
+                        if let Some(hook) = keyboard_hook.take() {
+                            let _ = UnhookWindowsHookEx(hook);
+                        }
                         if registered {
                             let _ = UnregisterHotKey(None, id);
                         }
                         return;
+                    }
+                    HotkeyCommand::SetContinuousHook(mode, reply) => {
+                        let mut changed = false;
+                        let result = match mode {
+                            Some(InputMode::Mouse) => {
+                                if let Some(hook) = keyboard_hook.take() {
+                                    let _ = UnhookWindowsHookEx(hook);
+                                    changed = true;
+                                }
+                                if mouse_hook.is_none() {
+                                    match SetWindowsHookExW(
+                                        WH_MOUSE_LL,
+                                        Some(mouse_hook_proc),
+                                        None,
+                                        0,
+                                    ) {
+                                        Ok(hook) => {
+                                            mouse_hook = Some(hook);
+                                            changed = true;
+                                            Ok(())
+                                        }
+                                        Err(err) => {
+                                            Err(format!("Failed to install mouse hook: {err}"))
+                                        }
+                                    }
+                                } else {
+                                    Ok(())
+                                }
+                            }
+                            Some(InputMode::Keyboard) => {
+                                if let Some(hook) = mouse_hook.take() {
+                                    let _ = UnhookWindowsHookEx(hook);
+                                    changed = true;
+                                }
+                                if keyboard_hook.is_none() {
+                                    match SetWindowsHookExW(
+                                        WH_KEYBOARD_LL,
+                                        Some(keyboard_hook_proc),
+                                        None,
+                                        0,
+                                    ) {
+                                        Ok(hook) => {
+                                            keyboard_hook = Some(hook);
+                                            changed = true;
+                                            Ok(())
+                                        }
+                                        Err(err) => {
+                                            Err(format!("Failed to install keyboard hook: {err}"))
+                                        }
+                                    }
+                                } else {
+                                    Ok(())
+                                }
+                            }
+                            None => {
+                                if let Some(hook) = mouse_hook.take() {
+                                    let _ = UnhookWindowsHookEx(hook);
+                                    changed = true;
+                                }
+                                if let Some(hook) = keyboard_hook.take() {
+                                    let _ = UnhookWindowsHookEx(hook);
+                                    changed = true;
+                                }
+                                Ok(())
+                            }
+                        };
+                        if changed {
+                            physical_inputs().clear();
+                        }
+                        let _ = reply.send(result);
                     }
                     HotkeyCommand::Set(next, reply) => {
                         if is_mouse_button_hotkey(next.key_code) && next.modifiers != 0 {
@@ -770,8 +1155,10 @@ fn hotkey_loop(
                         if result.is_ok() {
                             current = next;
                             registered = !is_mouse_button_hotkey(current.key_code);
-                            mouse4_was_down = GetAsyncKeyState(VK_XBUTTON1_CODE as i32) < 0;
-                            mouse5_was_down = GetAsyncKeyState(VK_XBUTTON2_CODE as i32) < 0;
+                            mouse4_was_down = is_mouse_button_hotkey(current.key_code)
+                                && GetAsyncKeyState(VK_XBUTTON1_CODE as i32) < 0;
+                            mouse5_was_down = is_mouse_button_hotkey(current.key_code)
+                                && GetAsyncKeyState(VK_XBUTTON2_CODE as i32) < 0;
                         } else {
                             registered = !is_mouse_button_hotkey(current.key_code)
                                 && RegisterHotKey(
@@ -786,67 +1173,52 @@ fn hotkey_loop(
                     }
                 }
             }
-            let result = PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE);
-            if result.as_bool()
-                && msg.message == WM_HOTKEY
-                && msg.wParam.0 as i32 == id
-                && registered
-            {
-                if click_options.read().unwrap().click_type == ClickType::Continuous && clicking_allowed.load(Ordering::Acquire) {
-                    if !can_start.load(Ordering::Acquire) && !continuous_enabled.load(Ordering::Acquire) {
-                        let _ = events.send(EngineEvent::InvalidTimedIntervalStart);
-                    } else {
-                        let next = !continuous_enabled.fetch_xor(true, Ordering::AcqRel);
-                        if running.swap(false, Ordering::AcqRel) {
-                            let _ = events.send(EngineEvent::Toggle(false));
-                        }
-                        let _ = events.send(EngineEvent::ContinuousEnabled(next));
-                    }
-                } else if clicking_allowed.load(Ordering::Acquire) {
-                    if !running.load(Ordering::Acquire) && !can_start.load(Ordering::Acquire) {
-                        let _ = events.send(EngineEvent::InvalidTimedIntervalStart);
-                    } else if let Some(next) = toggle_if_allowed(&running, &clicking_allowed, &can_start, &schedule_generation) {
-                        let _ = events.send(EngineEvent::Toggle(next));
-                    }
+
+            if is_mouse_button_hotkey(current.key_code) {
+                let mouse4_is_down = GetAsyncKeyState(VK_XBUTTON1_CODE as i32) < 0;
+                let mouse5_is_down = GetAsyncKeyState(VK_XBUTTON2_CODE as i32) < 0;
+                let selected_mouse_button_pressed = match current.key_code {
+                    VK_XBUTTON1_CODE => mouse4_is_down && !mouse4_was_down,
+                    VK_XBUTTON2_CODE => mouse5_is_down && !mouse5_was_down,
+                    _ => false,
+                };
+                mouse4_was_down = mouse4_is_down;
+                mouse5_was_down = mouse5_is_down;
+                if selected_mouse_button_pressed {
+                    handle_hotkey_trigger(
+                        &running,
+                        &clicking_allowed,
+                        &can_start,
+                        &schedule_generation,
+                        &click_options,
+                        &continuous_enabled,
+                        &events,
+                    );
                 }
             }
-            let mouse4_is_down = GetAsyncKeyState(VK_XBUTTON1_CODE as i32) < 0;
-            let mouse5_is_down = GetAsyncKeyState(VK_XBUTTON2_CODE as i32) < 0;
-            let selected_mouse_button_pressed = match current.key_code {
-                VK_XBUTTON1_CODE => mouse4_is_down && !mouse4_was_down,
-                VK_XBUTTON2_CODE => mouse5_is_down && !mouse5_was_down,
-                _ => false,
-            };
-            mouse4_was_down = mouse4_is_down;
-            mouse5_was_down = mouse5_is_down;
-            if selected_mouse_button_pressed {
-                if click_options.read().unwrap().click_type == ClickType::Continuous && clicking_allowed.load(Ordering::Acquire) {
-                    if !can_start.load(Ordering::Acquire) && !continuous_enabled.load(Ordering::Acquire) {
-                        let _ = events.send(EngineEvent::InvalidTimedIntervalStart);
-                    } else {
-                        let next = !continuous_enabled.fetch_xor(true, Ordering::AcqRel);
-                        if running.swap(false, Ordering::AcqRel) {
-                            let _ = events.send(EngineEvent::Toggle(false));
-                        }
-                        let _ = events.send(EngineEvent::ContinuousEnabled(next));
-                    }
-                } else {
-                    if clicking_allowed.load(Ordering::Acquire) && !running.load(Ordering::Acquire) && !can_start.load(Ordering::Acquire) {
-                        let _ = events.send(EngineEvent::InvalidTimedIntervalStart);
-                    } else if let Some(next) = toggle_if_allowed(&running, &clicking_allowed, &can_start, &schedule_generation) {
-                        let _ = events.send(EngineEvent::Toggle(next));
-                    }
+
+            let mut msg = MSG::default();
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                if msg.message == WM_HOTKEY && msg.wParam.0 as i32 == id && registered {
+                    handle_hotkey_trigger(
+                        &running,
+                        &clicking_allowed,
+                        &can_start,
+                        &schedule_generation,
+                        &click_options,
+                        &continuous_enabled,
+                        &events,
+                    );
                 }
-            }
-            if result.as_bool() {
                 let _ = DispatchMessageW(&msg);
             }
-            if !result.as_bool() {
-                thread::sleep(Duration::from_millis(3));
-            }
+
+            let wait_ms = if is_mouse_button_hotkey(current.key_code) { 5 } else { 10 };
+            let _ = MsgWaitForMultipleObjects(None, false, wait_ms, QS_ALLINPUT);
         }
     }
 }
+
 #[cfg(not(windows))]
 fn hotkey_loop(
     rx: Receiver<HotkeyCommand>,
@@ -861,8 +1233,13 @@ fn hotkey_loop(
     ready: Sender<Result<bool, String>>,
 ) {
     let _ = ready.send(Err("Global hotkeys require Windows".into()));
-    while let Ok(HotkeyCommand::Set(_, reply)) = rx.recv() {
-        let _ = reply.send(Err("Global hotkeys require Windows".into()));
+    while let Ok(command) = rx.recv() {
+        match command {
+            HotkeyCommand::Set(_, reply) | HotkeyCommand::SetContinuousHook(_, reply) => {
+                let _ = reply.send(Err("Global hotkeys require Windows".into()));
+            }
+            HotkeyCommand::Stop => break,
+        }
     }
 }
 
@@ -901,18 +1278,21 @@ mod tests {
 
     #[test]
     fn configured_interval_counts_individual_clicks_for_double_click_mode() {
-        let single = interval_for_rate(100_000, 10_000_000, RateEntryMode::Cps, options(InputMode::Mouse, ClickType::Single));
-        let double = interval_for_rate(100_000, 10_000_000, RateEntryMode::Cps, options(InputMode::Mouse, ClickType::Double));
-        let keyboard = interval_for_rate(100_000, 10_000_000, RateEntryMode::Cps, options(InputMode::Keyboard, ClickType::Double));
+        let single_options = options(InputMode::Mouse, ClickType::Single);
+        let double_options = options(InputMode::Mouse, ClickType::Double);
+        let keyboard_options = options(InputMode::Keyboard, ClickType::Double);
+        let single = interval_for_rate(100_000, 10_000_000, RateEntryMode::Cps, &single_options);
+        let double = interval_for_rate(100_000, 10_000_000, RateEntryMode::Cps, &double_options);
+        let keyboard = interval_for_rate(100_000, 10_000_000, RateEntryMode::Cps, &keyboard_options);
 
         assert_eq!(single, Duration::from_millis(10));
         assert_eq!(double, Duration::from_millis(20));
         assert_eq!(keyboard, Duration::from_millis(10));
         assert_eq!(
-            clicks_per_action(options(InputMode::Mouse, ClickType::Double)),
+            clicks_per_action(&options(InputMode::Mouse, ClickType::Double)),
             2
         );
-        assert_eq!(interval_for_rate(100_000, 86_400_000_000_000, RateEntryMode::Interval, options(InputMode::Mouse, ClickType::Single)), Duration::from_secs(86_400));
+        assert_eq!(interval_for_rate(100_000, 86_400_000_000_000, RateEntryMode::Interval, &single_options), Duration::from_secs(86_400));
     }
 
     #[test]
@@ -944,5 +1324,94 @@ mod tests {
         assert!(is_mouse_button_hotkey(VK_XBUTTON1_CODE));
         assert!(is_mouse_button_hotkey(VK_XBUTTON2_CODE));
         assert!(!is_mouse_button_hotkey(0x75));
+    }
+
+    #[test]
+    fn physical_inputs_down_up_and_hold_threshold() {
+        let inputs = PhysicalInputs::new();
+        assert!(!inputs.is_down(1));
+        assert!(!inputs.is_held(1, 80_000_000));
+
+        inputs.set_down(1);
+        assert!(inputs.is_down(1));
+        // Immediately after press, it should not yet have reached 80ms
+        assert!(!inputs.is_held(1, 80_000_000));
+
+        // With 0ns threshold, it is held
+        assert!(inputs.is_held(1, 0));
+
+        inputs.set_up(1);
+        assert!(!inputs.is_down(1));
+        assert!(!inputs.is_held(1, 0));
+    }
+
+    #[test]
+    fn physical_inputs_auto_repeat_preserves_timestamp() {
+        let inputs = PhysicalInputs::new();
+        inputs.set_down(65); // 'A'
+        let initial_ts = inputs.pressed_at_ns[65].load(Ordering::Relaxed);
+        assert_ne!(initial_ts, 0);
+
+        // Sleep briefly to advance time
+        thread::sleep(Duration::from_millis(5));
+
+        // Simulated auto-repeat
+        inputs.set_down(65);
+        let repeat_ts = inputs.pressed_at_ns[65].load(Ordering::Relaxed);
+        assert_eq!(initial_ts, repeat_ts, "Auto-repeat must not reset the initial press timestamp");
+    }
+
+    #[test]
+    fn physical_inputs_clear_resets_all_slots() {
+        let inputs = PhysicalInputs::new();
+        inputs.set_down(1);
+        inputs.set_down(2);
+        inputs.set_down(32);
+        assert!(inputs.is_down(1));
+        assert!(inputs.is_down(2));
+        assert!(inputs.is_down(32));
+
+        inputs.clear();
+        assert!(!inputs.is_down(1));
+        assert!(!inputs.is_down(2));
+        assert!(!inputs.is_down(32));
+    }
+
+    #[test]
+    fn held_mouse_buttons_push_and_slice() {
+        let mut held = HeldMouseButtons::empty();
+        assert!(held.is_empty());
+        assert_eq!(held.len(), 0);
+
+        held.push(MouseButton::Left);
+        held.push(MouseButton::Right);
+        assert_eq!(held.len(), 2);
+        assert_eq!(held.as_slice(), &[MouseButton::Left, MouseButton::Right]);
+
+        held.push(MouseButton::Middle);
+        assert_eq!(held.len(), 3);
+        assert_eq!(
+            held.as_slice(),
+            &[MouseButton::Left, MouseButton::Right, MouseButton::Middle]
+        );
+
+        // Pushing beyond 3 does not overflow fixed array
+        held.push(MouseButton::Left);
+        assert_eq!(held.len(), 3);
+    }
+
+    #[test]
+    fn selected_mouse_buttons_extracts_correct_buttons() {
+        let single = options(InputMode::Mouse, ClickType::Single);
+        let selected = selected_mouse_buttons(&single);
+        assert_eq!(selected.as_slice(), &[MouseButton::Left]);
+
+        let mut multi = options(InputMode::Mouse, ClickType::Continuous);
+        multi.mouse_buttons = vec![MouseButton::Left, MouseButton::Right];
+        let selected_multi = selected_mouse_buttons(&multi);
+        assert_eq!(
+            selected_multi.as_slice(),
+            &[MouseButton::Left, MouseButton::Right]
+        );
     }
 }

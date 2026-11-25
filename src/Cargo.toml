@@ -1,6 +1,6 @@
 [package]
 name = "vibeclicker"
-version = "0.3.2"
+version = "0.3.3"
 description = "A lightweight desktop autoclicker"
 authors = ["Rust AutoClicker"]
 edition = "2021"
@@ -23,6 +23,7 @@ tauri-plugin-updater = "2"
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
+    "Win32_Media",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
