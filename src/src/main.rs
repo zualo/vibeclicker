@@ -13,9 +13,17 @@ use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, State, WebviewWindow, WindowEvent,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WindowHeightBounds {
+    min_height: f64,
+    max_height: f64,
+    landscape: bool,
+}
+
 struct AppState {
     engine: Mutex<ClickEngine>,
     config: Mutex<AppConfig>,
+    window_bounds: Mutex<Option<WindowHeightBounds>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -122,8 +130,40 @@ fn set_clicking_allowed(allowed: bool, state: State<'_, AppState>) -> Result<Cli
     })
 }
 
+fn resolve_target_window_height(current_height: f64, bounds: WindowHeightBounds) -> Option<f64> {
+    if bounds.landscape {
+        ((current_height - bounds.max_height).abs() > 0.5).then_some(bounds.max_height)
+    } else if current_height < bounds.min_height - 0.5 || current_height > bounds.max_height + 0.5 {
+        Some(current_height.clamp(bounds.min_height, bounds.max_height))
+    } else {
+        None
+    }
+}
+
+fn clamp_window_height(window: &WebviewWindow, bounds: WindowHeightBounds) -> Result<(), String> {
+    let scale_factor = window.scale_factor().map_err(|error| error.to_string())?;
+    let current = window
+        .inner_size()
+        .map_err(|error| error.to_string())?
+        .to_logical::<f64>(scale_factor);
+    // Landscape is content-sized. Portrait preserves the user's chosen height
+    // while clamping it into the newly measured minimum and maximum bounds.
+    if let Some(target_height) = resolve_target_window_height(current.height, bounds) {
+        window
+            .set_size(LogicalSize::new(current.width, target_height))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
-fn set_window_content_height(height: f64, min_height: f64, landscape: bool, window: WebviewWindow) -> Result<(), String> {
+fn set_window_content_height(
+    height: f64,
+    min_height: f64,
+    landscape: bool,
+    state: State<'_, AppState>,
+    window: WebviewWindow,
+) -> Result<(), String> {
     const MAX_HEIGHT: f64 = 1600.0;
     if !height.is_finite() || !min_height.is_finite() {
         return Err("Window height is invalid".into());
@@ -134,6 +174,14 @@ fn set_window_content_height(height: f64, min_height: f64, landscape: bool, wind
     } else {
         min_height.clamp(1.0, max_height)
     };
+    let bounds = WindowHeightBounds {
+        min_height,
+        max_height,
+        landscape,
+    };
+    if let Ok(mut stored) = state.window_bounds.lock() {
+        *stored = Some(bounds);
+    }
     window
         .set_min_size(None::<LogicalSize<f64>>)
         .map_err(|error| error.to_string())?;
@@ -146,29 +194,7 @@ fn set_window_content_height(height: f64, min_height: f64, landscape: bool, wind
     window
         .set_max_size(Some(LogicalSize::new(700.0, max_height)))
         .map_err(|error| error.to_string())?;
-    let scale_factor = window.scale_factor().map_err(|error| error.to_string())?;
-    let current = window
-        .inner_size()
-        .map_err(|error| error.to_string())?
-        .to_logical::<f64>(scale_factor);
-    // Landscape is content-sized. Portrait preserves the user's chosen height
-    // while clamping it into the newly measured minimum and maximum bounds.
-    let should_resize = if landscape {
-        (current.height - height).abs() > 0.5
-    } else {
-        current.height < min_height - 0.5 || current.height > height + 0.5
-    };
-    let target_height = if landscape {
-        height
-    } else {
-        current.height.clamp(min_height, height)
-    };
-    if should_resize {
-        window
-            .set_size(LogicalSize::new(current.width, target_height))
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(())
+    clamp_window_height(&window, bounds)
 }
 
 #[tauri::command]
@@ -414,6 +440,79 @@ fn set_native_acrylic(window: &WebviewWindow, enabled: bool, theme: settings::Th
     }
 }
 
+#[cfg(windows)]
+mod resize_subclass {
+    use super::{clamp_window_height, AppState};
+    use tauri::{AppHandle, Manager, WebviewWindow};
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
+    use windows::Win32::UI::WindowsAndMessaging::{WM_EXITSIZEMOVE, WM_NCDESTROY};
+
+    const SUBCLASS_ID: usize = 0x5643_5253;
+
+    struct ResizeSubclassContext {
+        app_handle: AppHandle,
+    }
+
+    pub fn install(window: &WebviewWindow, app_handle: AppHandle) -> Result<(), String> {
+        let native_hwnd = window.hwnd().map_err(|error| error.to_string())?;
+        let hwnd = HWND(native_hwnd.0);
+        let ctx = Box::into_raw(Box::new(ResizeSubclassContext { app_handle }));
+        let installed = unsafe {
+            SetWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID, ctx as usize).as_bool()
+        };
+        if !installed {
+            unsafe {
+                drop(Box::from_raw(ctx));
+            }
+            return Err("Failed to install resize window subclass".into());
+        }
+        Ok(())
+    }
+
+    unsafe extern "system" fn subclass_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        subclass_id: usize,
+        ref_data: usize,
+    ) -> LRESULT {
+        match msg {
+            WM_EXITSIZEMOVE => {
+                let result = DefSubclassProc(hwnd, msg, wparam, lparam);
+                if ref_data != 0 {
+                    let ctx = &*(ref_data as *const ResizeSubclassContext);
+                    let app_handle = ctx.app_handle.clone();
+                    let _ = ctx.app_handle.run_on_main_thread(move || {
+                        let bounds = app_handle
+                            .state::<AppState>()
+                            .window_bounds
+                            .lock()
+                            .ok()
+                            .and_then(|guard| *guard);
+                        if let (Some(bounds), Some(window)) =
+                            (bounds, app_handle.get_webview_window("main"))
+                        {
+                            let _ = clamp_window_height(&window, bounds);
+                        }
+                    });
+                }
+                result
+            }
+            WM_NCDESTROY => {
+                let _ = RemoveWindowSubclass(hwnd, Some(subclass_proc), subclass_id);
+                let result = DefSubclassProc(hwnd, msg, wparam, lparam);
+                if ref_data != 0 {
+                    drop(Box::from_raw(ref_data as *mut ResizeSubclassContext));
+                }
+                result
+            }
+            _ => DefSubclassProc(hwnd, msg, wparam, lparam),
+        }
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -452,6 +551,7 @@ fn main() {
             app.manage(AppState {
                 engine: Mutex::new(engine),
                 config: Mutex::new(config.clone()),
+                window_bounds: Mutex::new(None),
             });
             let show_item = MenuItem::with_id(app, "show", "Show vibeclicker", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -487,6 +587,10 @@ fn main() {
             tray.set_visible(config.tray_behavior != TrayBehavior::Never)?;
 
             if let Some(window) = app.get_webview_window("main") {
+                #[cfg(windows)]
+                {
+                    let _ = resize_subclass::install(&window, app.handle().clone());
+                }
                 let event_window = window.clone();
                 let event_app = app.handle().clone();
                 window.on_window_event(move |event| match event {
@@ -580,7 +684,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::reject_key_collision;
+    use super::{reject_key_collision, resolve_target_window_height, WindowHeightBounds};
 
     #[test]
     fn output_key_cannot_match_toggle_hotkey() {
@@ -590,5 +694,56 @@ mod tests {
     #[test]
     fn different_output_and_toggle_keys_are_allowed() {
         assert!(reject_key_collision(0x20, 0x75).is_ok());
+    }
+
+    #[test]
+    fn landscape_snaps_down_from_portrait_height() {
+        let bounds = WindowHeightBounds {
+            min_height: 558.0,
+            max_height: 558.0,
+            landscape: true,
+        };
+        assert_eq!(resolve_target_window_height(720.0, bounds), Some(558.0));
+    }
+
+    #[test]
+    fn landscape_within_half_pixel_does_not_resize() {
+        let bounds = WindowHeightBounds {
+            min_height: 558.0,
+            max_height: 558.0,
+            landscape: true,
+        };
+        assert_eq!(resolve_target_window_height(558.4, bounds), None);
+        assert_eq!(resolve_target_window_height(557.6, bounds), None);
+    }
+
+    #[test]
+    fn portrait_within_bounds_is_preserved() {
+        let bounds = WindowHeightBounds {
+            min_height: 558.0,
+            max_height: 720.0,
+            landscape: false,
+        };
+        assert_eq!(resolve_target_window_height(640.0, bounds), None);
+    }
+
+    #[test]
+    fn portrait_above_max_is_clamped() {
+        let bounds = WindowHeightBounds {
+            min_height: 558.0,
+            max_height: 720.0,
+            landscape: false,
+        };
+        assert_eq!(resolve_target_window_height(760.0, bounds), Some(720.0));
+    }
+
+    #[test]
+    fn portrait_below_min_is_clamped() {
+        let bounds = WindowHeightBounds {
+            min_height: 558.0,
+            max_height: 720.0,
+            landscape: false,
+        };
+        assert_eq!(resolve_target_window_height(500.0, bounds), Some(558.0));
     }
 }

@@ -379,7 +379,10 @@ function syncWindowHeight() {
     body.style.minHeight = previous.bodyMinHeight;
     appFrame.style.minHeight = previous.frameMinHeight;
     viewStack.style.flex = previous.stackFlex;
-    if (height === lastWindowHeight && minHeight === lastWindowMinHeight && landscape === lastWindowLandscape) return;
+    const heightMismatch = landscape
+      ? Math.abs(window.innerHeight - height) > 1
+      : window.innerHeight < minHeight - 1 || window.innerHeight > height + 1;
+    if (!heightMismatch && height === lastWindowHeight && minHeight === lastWindowMinHeight && landscape === lastWindowLandscape) return;
     lastWindowHeight = height;
     lastWindowLandscape = landscape;
     lastWindowMinHeight = minHeight;
