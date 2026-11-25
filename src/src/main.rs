@@ -123,18 +123,17 @@ fn set_clicking_allowed(allowed: bool, state: State<'_, AppState>) -> Result<Cli
 }
 
 #[tauri::command]
-fn set_window_content_height(height: f64, landscape: bool, window: WebviewWindow) -> Result<(), String> {
-    const MIN_HEIGHT: f64 = 480.0;
+fn set_window_content_height(height: f64, min_height: f64, landscape: bool, window: WebviewWindow) -> Result<(), String> {
     const MAX_HEIGHT: f64 = 1600.0;
-    let height = if height.is_finite() {
-        if landscape { height.clamp(1.0, MAX_HEIGHT) } else { height.clamp(MIN_HEIGHT, MAX_HEIGHT) }
-    } else {
+    if !height.is_finite() || !min_height.is_finite() {
         return Err("Window height is invalid".into());
+    }
+    let max_height = height.clamp(1.0, MAX_HEIGHT);
+    let min_height = if landscape {
+        max_height
+    } else {
+        min_height.clamp(1.0, max_height)
     };
-    let min_height = if landscape { height } else { MIN_HEIGHT };
-    // Portrait's maximum follows the frontend's viewport-independent natural
-    // content measurement, with the same safety ceiling used to validate it.
-    let max_height = height;
     window
         .set_min_size(None::<LogicalSize<f64>>)
         .map_err(|error| error.to_string())?;
@@ -153,15 +152,20 @@ fn set_window_content_height(height: f64, landscape: bool, window: WebviewWindow
         .map_err(|error| error.to_string())?
         .to_logical::<f64>(scale_factor);
     // Landscape is content-sized. Portrait preserves the user's chosen height
-    // unless a reduced content cap now puts the current window above it.
+    // while clamping it into the newly measured minimum and maximum bounds.
     let should_resize = if landscape {
         (current.height - height).abs() > 0.5
     } else {
-        current.height > height + 0.5
+        current.height < min_height - 0.5 || current.height > height + 0.5
+    };
+    let target_height = if landscape {
+        height
+    } else {
+        current.height.clamp(min_height, height)
     };
     if should_resize {
         window
-            .set_size(LogicalSize::new(current.width, height))
+            .set_size(LogicalSize::new(current.width, target_height))
             .map_err(|error| error.to_string())?;
     }
     Ok(())

@@ -43,11 +43,11 @@ jobs:
           releaseBody: |
             ## What's Changed
 
-            - Automatic update checking on app startup
-            - Centered, blocking update prompt with install progress
-            - Fixed browser preview for update and hotkey interactions
+            - Fixed continuous mode input detection and removed the ~147 CPS bottleneck using on-demand low-level hooks with injected-event filtering and `MsgWaitForMultipleObjects`
+            - Added high-resolution Windows timer (`timeBeginPeriod(1)`), 2 ms spin-wait scheduling, lock-free physical input tracking, and batched multi-button `SendInput`
+            - Improved portrait/landscape window height bounds and resizing behavior
 
-            **Full Changelog**: https://github.com/zualo/vibeclicker/compare/app-v0.3.1...app-v0.3.2
+            **Full Changelog**: https://github.com/zualo/vibeclicker/compare/app-v0.3.2...app-v0.3.3
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: true

@@ -69,9 +69,13 @@ const appFrame = $(".app-frame");
 const fadingHiddenTargets = new WeakMap();
 const fadingHiddenTimers = new WeakMap();
 const VISIBILITY_FADE_MS = 120;
-const MIN_WINDOW_HEIGHT = 480;
 let lastWindowHeight = null;
 let lastWindowLandscape = null;
+let lastWindowMinHeight = null;
+// Keep the latest content-locked landscape height as the lower bound for
+// vertical resizing in portrait. Startup uses the default landscape size
+// until the first content measurement arrives.
+let landscapeLockedHeight = 558;
 
 const iconDefinitions = { ArrowUpRight, Check, CircleStop, Download, Github, Keyboard, Play };
 const refreshIcons = () => {
@@ -367,15 +371,19 @@ function syncWindowHeight() {
     const paddingBottom = Number.parseFloat(getComputedStyle(appFrame).paddingBottom) || 0;
     const contentHeight = contentBottom - frameRect.top + paddingBottom;
     const landscape = window.matchMedia("(min-width: 700px)").matches;
-    const height = landscape ? Math.ceil(contentHeight) : Math.max(MIN_WINDOW_HEIGHT, Math.ceil(contentHeight));
+    const naturalHeight = Math.min(1600, Math.ceil(contentHeight));
+    if (landscape) landscapeLockedHeight = naturalHeight;
+    const minHeight = landscape ? naturalHeight : Math.min(landscapeLockedHeight, 1600);
+    const height = landscape ? naturalHeight : Math.max(minHeight, naturalHeight);
     root.style.minHeight = previous.rootMinHeight;
     body.style.minHeight = previous.bodyMinHeight;
     appFrame.style.minHeight = previous.frameMinHeight;
     viewStack.style.flex = previous.stackFlex;
-    if (height === lastWindowHeight && landscape === lastWindowLandscape) return;
+    if (height === lastWindowHeight && minHeight === lastWindowMinHeight && landscape === lastWindowLandscape) return;
     lastWindowHeight = height;
     lastWindowLandscape = landscape;
-    invokeTauri("set_window_content_height", { height, landscape }).catch(() => {});
+    lastWindowMinHeight = minHeight;
+    invokeTauri("set_window_content_height", { height, minHeight, landscape }).catch(() => {});
   });
 }
 
